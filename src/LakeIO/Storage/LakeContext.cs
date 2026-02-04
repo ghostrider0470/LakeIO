@@ -414,12 +414,13 @@ public class LakeContext : ILakeContext, IDisposable
         var contentLength = stream.Length;
         stream.Position = 0;
         
-        // Validate that we have a valid Parquet file
+        // Pre-upload guard: validates LOCAL stream is valid (catches serialization bugs)
+        // Post-upload guard (ValidateUploadedBlobAsync after try-catch): validates REMOTE blob is valid (catches network failures)
         if (contentLength < 12) // Minimum Parquet file size
         {
             throw new InvalidOperationException($"Serialized Parquet data is too small ({contentLength} bytes). Minimum valid Parquet file is 12 bytes.");
         }
-        
+
         try
         {
             if (overwrite)
@@ -435,31 +436,31 @@ public class LakeContext : ILakeContext, IDisposable
                 catch (Azure.RequestFailedException ex) when (ex.ErrorCode == "PathNotFound")
                 {
                     // File doesn't exist, which is fine for our purposes
-                    _logger.LogDebug("File {Path} didn't exist when trying to delete it, continuing with upload", 
+                    _logger.LogDebug("File {Path} didn't exist when trying to delete it, continuing with upload",
                         fileClient.Path);
                 }
             }
-            
+
             // Upload the entire stream at once
             await fileClient.UploadAsync(stream, overwrite: false);
         }
         catch (Azure.RequestFailedException ex) when (ex.ErrorCode == "PathAlreadyExists" && overwrite)
         {
             // If the path already exists and we want to overwrite, try the delete-then-upload approach again
-            _logger.LogDebug("Path {Path} already exists, retrying with explicit delete-then-create approach", 
+            _logger.LogDebug("Path {Path} already exists, retrying with explicit delete-then-create approach",
                 fileClient.Path);
-                
+
             try
             {
                 // Reset stream position
                 stream.Position = 0;
-                
+
                 // Delete the file explicitly
                 await fileClient.DeleteAsync();
-                
+
                 // Wait a short time to ensure deletion is processed
                 await Task.Delay(100);
-                
+
                 // Upload again
                 await fileClient.UploadAsync(stream, overwrite: false);
             }
@@ -626,7 +627,8 @@ public class LakeContext : ILakeContext, IDisposable
         var contentLength = stream.Length;
         stream.Position = 0;
         
-        // Validate that we have a valid Parquet file
+        // Pre-upload guard: validates LOCAL stream is valid (catches serialization bugs)
+        // Post-upload guard (ValidateUploadedBlobAsync after try-catch): validates REMOTE blob is valid (catches network failures)
         if (contentLength < 12) // Minimum Parquet file size
         {
             throw new InvalidOperationException($"Serialized Parquet data is too small ({contentLength} bytes). Minimum valid Parquet file is 12 bytes.");
