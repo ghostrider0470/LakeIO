@@ -1789,6 +1789,17 @@
             <param name="recursive">Whether to list files recursively.</param>
             <returns>A collection of file information including paths and metadata.</returns>
         </member>
+        <member name="M:LakeIO.LakeContext.ValidateUploadedBlobAsync(Azure.Storage.Files.DataLake.DataLakeFileClient,System.String,System.Int64)">
+            <summary>
+            Validates that an uploaded blob meets the minimum size for a valid Parquet file.
+            If validation fails, the blob is deleted and an InvalidOperationException is thrown.
+            This only runs after a SUCCESSFUL upload. If UploadAsync throws (e.g., network failure),
+            the exception propagates naturally and triggers Service Bus retry -- there is no
+            successfully-written blob to validate in that case.
+            Root cause (INV-01): UploadAsync internally performs Create+Append+Flush which is NOT atomic.
+            Network failure after Create leaves zero-byte blob.
+            </summary>
+        </member>
         <member name="M:LakeIO.LakeContext.IsValidParquetFile(System.String,System.String)">
             <summary>
             Checks if a file is a valid Parquet file by checking size and format.
