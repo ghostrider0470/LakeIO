@@ -324,20 +324,20 @@ public class LakeContext : ILakeContext, IDisposable
         catch (Azure.RequestFailedException ex) when (ex.ErrorCode == "PathAlreadyExists" && overwrite)
         {
             // If the path already exists and we want to overwrite, try the delete-then-upload approach again
-            _logger.LogDebug("Path {Path} already exists, retrying with explicit delete-then-create approach", 
+            _logger.LogDebug("Path {Path} already exists, retrying with explicit delete-then-create approach",
                 fileClient.Path);
-                
+
             try
             {
                 // Reset stream position
                 stream.Position = 0;
-                
+
                 // Delete the file explicitly
                 await fileClient.DeleteAsync();
-                
+
                 // Wait a short time to ensure deletion is processed
                 await Task.Delay(100);
-                
+
                 // Upload again
                 await fileClient.UploadAsync(stream, overwrite: false);
             }
@@ -347,12 +347,17 @@ public class LakeContext : ILakeContext, IDisposable
             }
         }
 
-        _logger.LogInformation("Successfully stored Parquet file at {Path} in file system {FileSystem}", 
+        // Post-upload validation: only reached if upload succeeded (either primary or retry path).
+        // If UploadAsync threw a non-PathAlreadyExists exception, it propagated up and we never reach here.
+        // That's correct: a failed upload means no blob to validate, and the exception triggers retry.
+        await ValidateUploadedBlobAsync(fileClient, fileClient.Path);
+
+        _logger.LogInformation("Successfully stored Parquet file at {Path} in file system {FileSystem}",
             fileClient.Path, fileSystemName);
-            
+
         return fileClient.Path;
     }
-    
+
     /// <summary>
     /// Stores a collection of items as a Parquet file in Azure Data Lake Storage.
     /// </summary>
@@ -464,12 +469,15 @@ public class LakeContext : ILakeContext, IDisposable
             }
         }
 
-        _logger.LogInformation("Successfully stored Parquet file with multiple items at {Path} in file system {FileSystem}", 
+        // Post-upload validation: only reached if upload succeeded (see StoreItemAsParquet for rationale)
+        await ValidateUploadedBlobAsync(fileClient, fileClient.Path);
+
+        _logger.LogInformation("Successfully stored Parquet file with multiple items at {Path} in file system {FileSystem}",
             fileClient.Path, fileSystemName);
-            
+
         return fileClient.Path;
     }
-    
+
     /// <summary>
     /// Updates an existing Parquet file in Azure Data Lake Storage with new content.
     /// </summary>
@@ -559,13 +567,16 @@ public class LakeContext : ILakeContext, IDisposable
                 throw new InvalidOperationException($"Failed to upload Parquet file after retry: {retryEx.Message}", retryEx);
             }
         }
-        
-        _logger.LogInformation("Successfully updated Parquet file at {Path} in file system {FileSystem}", 
+
+        // Post-upload validation: only reached if upload succeeded (see StoreItemAsParquet for rationale)
+        await ValidateUploadedBlobAsync(fileClient, fileClient.Path);
+
+        _logger.LogInformation("Successfully updated Parquet file at {Path} in file system {FileSystem}",
             fileClient.Path, fileSystemName);
 
         return fileClient.Path;
     }
-    
+
     /// <summary>
     /// Updates an existing Parquet file in Azure Data Lake Storage with a collection of items.
     /// </summary>
@@ -666,13 +677,16 @@ public class LakeContext : ILakeContext, IDisposable
                 throw new InvalidOperationException($"Failed to upload Parquet file after retry: {retryEx.Message}", retryEx);
             }
         }
-        
-        _logger.LogInformation("Successfully updated Parquet file with multiple items at {Path} in file system {FileSystem}", 
+
+        // Post-upload validation: only reached if upload succeeded (see StoreItemAsParquet for rationale)
+        await ValidateUploadedBlobAsync(fileClient, fileClient.Path);
+
+        _logger.LogInformation("Successfully updated Parquet file with multiple items at {Path} in file system {FileSystem}",
             fileClient.Path, fileSystemName);
 
         return fileClient.Path;
     }
-    
+
     /// <summary>
     /// Reads a Parquet file from Azure Data Lake Storage and deserializes it to an object.
     /// </summary>
@@ -1078,6 +1092,36 @@ public class LakeContext : ILakeContext, IDisposable
             files.Count, directoryPath, fileSystemName);
 
         return files;
+    }
+
+    /// <summary>
+    /// Validates that an uploaded blob meets the minimum size for a valid Parquet file.
+    /// If validation fails, the blob is deleted and an InvalidOperationException is thrown.
+    /// This only runs after a SUCCESSFUL upload. If UploadAsync throws (e.g., network failure),
+    /// the exception propagates naturally and triggers Service Bus retry -- there is no
+    /// successfully-written blob to validate in that case.
+    /// Root cause (INV-01): UploadAsync internally performs Create+Append+Flush which is NOT atomic.
+    /// Network failure after Create leaves zero-byte blob.
+    /// </summary>
+    private async Task ValidateUploadedBlobAsync(DataLakeFileClient fileClient, string filePath, long minimumBytes = 12)
+    {
+        var properties = await fileClient.GetPropertiesAsync();
+        var uploadedSize = properties.Value.ContentLength;
+
+        if (uploadedSize < minimumBytes)
+        {
+            _logger.LogError(
+                "Post-upload validation FAILED: blob {FilePath} is {UploadedSize} bytes, " +
+                "minimum required is {MinimumBytes} bytes. Deleting corrupted blob.",
+                filePath, uploadedSize, minimumBytes);
+
+            try { await fileClient.DeleteAsync(); }
+            catch (Azure.RequestFailedException) { /* already gone */ }
+
+            throw new InvalidOperationException(
+                $"Post-upload validation failed: blob '{filePath}' is {uploadedSize} bytes " +
+                $"(minimum {minimumBytes}). Corrupted blob deleted.");
+        }
     }
 
     /// <summary>

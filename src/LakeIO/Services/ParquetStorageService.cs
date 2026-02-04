@@ -60,6 +60,28 @@ public class ParquetStorageService : IParquetStorageService
 
         await fileClient.UploadAsync(stream, overwrite);
 
+        // POST-UPLOAD VALIDATION (INV-01 root cause: UploadAsync internally performs Create+Append+Flush
+        // which is NOT atomic. Network failure after Create leaves zero-byte blob. The existing
+        // EnableFileSizeMonitoring/CheckFileSizeAsync only monitors for large files and only logs
+        // warnings -- it cannot be repurposed for zero-byte prevention. See INV-02.)
+        var properties = await fileClient.GetPropertiesAsync();
+        var uploadedSize = properties.Value.ContentLength;
+
+        if (uploadedSize < 12) // Minimum valid Parquet: 4-byte PAR1 header + footer length + 4-byte PAR1 footer
+        {
+            _logger.LogError(
+                "Post-upload validation FAILED: blob {FilePath} is {UploadedSize} bytes, " +
+                "minimum required is 12 bytes. Deleting corrupted blob.",
+                filePath, uploadedSize);
+
+            try { await fileClient.DeleteAsync(); }
+            catch (Azure.RequestFailedException) { /* already gone */ }
+
+            throw new InvalidOperationException(
+                $"Post-upload validation failed: blob '{filePath}' is {uploadedSize} bytes " +
+                $"(minimum valid Parquet is 12 bytes). Corrupted blob deleted.");
+        }
+
         // Check file size after upload
         if (_parquetOptions.EnableFileSizeMonitoring)
         {
