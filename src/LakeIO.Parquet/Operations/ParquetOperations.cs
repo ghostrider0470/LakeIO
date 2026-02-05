@@ -165,6 +165,75 @@ public class ParquetOperations
     }
 
     /// <summary>
+    /// Reads a Parquet file and streams deserialized records as an <see cref="IAsyncEnumerable{T}"/>
+    /// without loading the entire file into memory.
+    /// </summary>
+    /// <typeparam name="T">
+    /// The type to deserialize each Parquet record to. Must be a class with a parameterless constructor.
+    /// Properties are mapped to Parquet columns by name (case-insensitive) or via Parquet.Net attributes.
+    /// </typeparam>
+    /// <param name="path">The file path within the file system (e.g., <c>"data/records.parquet"</c>).</param>
+    /// <param name="options">Optional per-operation Parquet options (currently unused for reads; reserved for future filtering).</param>
+    /// <param name="cancellationToken">
+    /// Cancellation token. Can also be passed via <c>.WithCancellation(token)</c> on the returned enumerable.
+    /// </param>
+    /// <returns>An async enumerable of deserialized records.</returns>
+    /// <remarks>
+    /// <para>Uses <c>OpenReadAsync</c> to obtain a seekable stream, which Parquet requires to read
+    /// the footer metadata. The stream remains alive for the lifetime of the async iterator and is
+    /// disposed when the caller breaks from iteration or completes enumeration.</para>
+    /// <para>Records are yielded incrementally via <c>ParquetSerializer.DeserializeAllAsync</c>,
+    /// which reads row groups on demand rather than loading the entire file.</para>
+    /// </remarks>
+    public virtual async IAsyncEnumerable<T> ReadStreamAsync<T>(
+        string path,
+        ParquetOptions? options = null,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        where T : class, new()
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+
+        var fileClient = _fileSystemClient!.GetFileClient(path);
+
+        await using var stream = await fileClient.OpenReadAsync(
+            new DataLakeOpenReadOptions(allowModifications: false),
+            cancellationToken).ConfigureAwait(false);
+
+        await foreach (var item in ParquetSerializer.DeserializeAllAsync<T>(stream, cancellationToken: cancellationToken).ConfigureAwait(false))
+        {
+            yield return item;
+        }
+    }
+
+    /// <summary>
+    /// Reads the Parquet schema (column names, types, and structure) from a file without loading any data.
+    /// </summary>
+    /// <param name="path">The file path within the file system (e.g., <c>"data/records.parquet"</c>).</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The <see cref="ParquetSchema"/> describing the file's column structure.</returns>
+    /// <remarks>
+    /// <para>This is a lightweight metadata-only operation. Parquet stores the schema in the file footer
+    /// (typically the last few KB), so no row data is read or transferred.</para>
+    /// <para>Uses <c>OpenReadAsync</c> for a seekable stream, then <c>ParquetReader.CreateAsync</c>
+    /// to parse only the footer metadata.</para>
+    /// </remarks>
+    public virtual async Task<ParquetSchema> GetSchemaAsync(
+        string path,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+
+        var fileClient = _fileSystemClient!.GetFileClient(path);
+
+        await using var stream = await fileClient.OpenReadAsync(
+            new DataLakeOpenReadOptions(allowModifications: false),
+            cancellationToken).ConfigureAwait(false);
+
+        using var reader = await ParquetReader.CreateAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+        return reader.Schema;
+    }
+
+    /// <summary>
     /// Resolves Parquet options from the per-operation options, LakeClientOptions defaults, and library defaults.
     /// </summary>
     private (CompressionMethod compression, int rowGroupSize) ResolveOptions(ParquetOptions? options)
