@@ -60,12 +60,9 @@ public static class FileSystemClientExtensions
     /// </summary>
     /// <param name="client">The file system client.</param>
     /// <returns>Directory operations instance (cached, thread-safe).</returns>
-    /// <exception cref="NotImplementedException">Thrown until Phase 5.5 implements DirectoryOperations.</exception>
-    public static object Directory(this FileSystemClient client)
+    public static DirectoryOperations Directory(this FileSystemClient client)
     {
-        // TODO: Replace with concrete type in Phase 5.5 (Directory Operations)
-        // return client.GetOrCreateOperations<DirectoryOperations>(
-        //     (azure, opts) => new DirectoryOperations(azure, opts));
-        throw new NotImplementedException("Directory operations will be implemented in Phase 5.5.");
+        return client.GetOrCreateOperations<DirectoryOperations>(
+            (azure, opts) => new DirectoryOperations(azure, opts));
     }
 }
