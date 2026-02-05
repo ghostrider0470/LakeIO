@@ -16,13 +16,10 @@ public static class FileSystemClientExtensions
     /// </summary>
     /// <param name="client">The file system client.</param>
     /// <returns>JSON operations instance (cached, thread-safe).</returns>
-    /// <exception cref="NotImplementedException">Thrown until Phase 2 implements JsonOperations.</exception>
-    public static object Json(this FileSystemClient client)
+    public static JsonOperations Json(this FileSystemClient client)
     {
-        // TODO: Replace with concrete type in Phase 2 (JSON Operations)
-        // return client.GetOrCreateOperations<JsonOperations>(
-        //     (azure, opts) => new JsonOperations(azure, opts));
-        throw new NotImplementedException("JSON operations will be implemented in Phase 2.");
+        return client.GetOrCreateOperations<JsonOperations>(
+            (azure, opts) => new JsonOperations(azure, opts));
     }
 
     /// <summary>
