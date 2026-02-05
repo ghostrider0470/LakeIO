@@ -27,13 +27,10 @@ public static class FileSystemClientExtensions
     /// </summary>
     /// <param name="client">The file system client.</param>
     /// <returns>CSV operations instance (cached, thread-safe).</returns>
-    /// <exception cref="NotImplementedException">Thrown until Phase 4 implements CsvOperations.</exception>
-    public static object Csv(this FileSystemClient client)
+    public static CsvOperations Csv(this FileSystemClient client)
     {
-        // TODO: Replace with concrete type in Phase 4 (CSV Operations)
-        // return client.GetOrCreateOperations<CsvOperations>(
-        //     (azure, opts) => new CsvOperations(azure, opts));
-        throw new NotImplementedException("CSV operations will be implemented in Phase 4.");
+        return client.GetOrCreateOperations<CsvOperations>(
+            (azure, opts) => new CsvOperations(azure, opts));
     }
 
     /// <summary>
