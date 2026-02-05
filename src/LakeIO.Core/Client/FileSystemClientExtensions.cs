@@ -38,13 +38,10 @@ public static class FileSystemClientExtensions
     /// </summary>
     /// <param name="client">The file system client.</param>
     /// <returns>File operations instance (cached, thread-safe).</returns>
-    /// <exception cref="NotImplementedException">Thrown until Phase 5 implements FileOperations.</exception>
-    public static object Files(this FileSystemClient client)
+    public static FileOperations Files(this FileSystemClient client)
     {
-        // TODO: Replace with concrete type in Phase 5 (File Operations)
-        // return client.GetOrCreateOperations<FileOperations>(
-        //     (azure, opts) => new FileOperations(azure, opts));
-        throw new NotImplementedException("File operations will be implemented in Phase 5.");
+        return client.GetOrCreateOperations<FileOperations>(
+            (azure, opts) => new FileOperations(azure, opts));
     }
 
     /// <summary>
