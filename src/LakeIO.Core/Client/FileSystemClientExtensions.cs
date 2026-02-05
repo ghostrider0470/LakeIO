@@ -49,13 +49,10 @@ public static class FileSystemClientExtensions
     /// </summary>
     /// <param name="client">The file system client.</param>
     /// <returns>Batch operations instance (cached, thread-safe).</returns>
-    /// <exception cref="NotImplementedException">Thrown until Phase 5 implements BatchOperations.</exception>
-    public static object Batch(this FileSystemClient client)
+    public static BatchOperations Batch(this FileSystemClient client)
     {
-        // TODO: Replace with concrete type in Phase 5 (Batch Operations)
-        // return client.GetOrCreateOperations<BatchOperations>(
-        //     (azure, opts) => new BatchOperations(azure, opts));
-        throw new NotImplementedException("Batch operations will be implemented in Phase 5.");
+        return client.GetOrCreateOperations<BatchOperations>(
+            (azure, opts) => new BatchOperations(azure, opts));
     }
 
     /// <summary>
