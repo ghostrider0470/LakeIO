@@ -58,12 +58,21 @@ public class ParquetStorageService : IParquetStorageService
         using var stream = await _parquetFormatter.SerializeItemsAsync(itemsList);
         stream.Position = 0;
 
-        await fileClient.UploadAsync(stream, overwrite);
+        try
+        {
+            await fileClient.UploadAsync(stream, overwrite);
+        }
+        catch (Exception ex)
+        {
+            // CRITICAL: UploadAsync internally does Create->Append->Flush (NOT atomic).
+            // Network failure after Create but before Append leaves a zero-byte blob.
+            // We MUST cleanup before rethrowing to prevent corrupted files in Data Lake.
+            _logger.LogWarning(ex, "Upload failed for {FilePath}, checking for partial upload to cleanup", filePath);
+            await CleanupPartialUploadAsync(fileClient, filePath);
+            throw;
+        }
 
-        // POST-UPLOAD VALIDATION (INV-01 root cause: UploadAsync internally performs Create+Append+Flush
-        // which is NOT atomic. Network failure after Create leaves zero-byte blob. The existing
-        // EnableFileSizeMonitoring/CheckFileSizeAsync only monitors for large files and only logs
-        // warnings -- it cannot be repurposed for zero-byte prevention. See INV-02.)
+        // POST-UPLOAD VALIDATION: defense-in-depth for successful uploads
         var properties = await fileClient.GetPropertiesAsync();
         var uploadedSize = properties.Value.ContentLength;
 
@@ -251,6 +260,41 @@ public class ParquetStorageService : IParquetStorageService
         else if (_azureOptions.EnableDetailedLogging)
         {
             _logger.LogDebug("Parquet file {FilePath} size: {SizeMB:F2} MB", filePath, fileSizeMB);
+        }
+    }
+
+    /// <summary>
+    /// Cleans up a partial/failed upload by deleting the blob if it exists and is invalid.
+    /// Called when UploadAsync throws an exception - the blob may or may not exist depending
+    /// on where in the Create->Append->Flush sequence the failure occurred.
+    /// </summary>
+    private async Task CleanupPartialUploadAsync(Azure.Storage.Files.DataLake.DataLakeFileClient fileClient, string filePath, long minimumBytes = 12)
+    {
+        try
+        {
+            if (!await fileClient.ExistsAsync())
+            {
+                // No blob was created, nothing to cleanup
+                return;
+            }
+
+            var properties = await fileClient.GetPropertiesAsync();
+            var blobSize = properties.Value.ContentLength;
+
+            if (blobSize < minimumBytes)
+            {
+                _logger.LogWarning(
+                    "Cleaning up partial upload: blob {FilePath} is {BlobSize} bytes (minimum valid is {MinimumBytes}). Deleting.",
+                    filePath, blobSize, minimumBytes);
+
+                await fileClient.DeleteAsync();
+            }
+            // If blob is >= minimumBytes, it might be a valid previous version - don't delete
+        }
+        catch (Exception cleanupEx)
+        {
+            // Don't let cleanup failure mask the original exception
+            _logger.LogWarning(cleanupEx, "Failed to cleanup partial upload at {FilePath}", filePath);
         }
     }
 }

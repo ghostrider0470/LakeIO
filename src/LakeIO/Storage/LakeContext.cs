@@ -313,11 +313,11 @@ public class LakeContext : ILakeContext, IDisposable
                 catch (Azure.RequestFailedException ex) when (ex.ErrorCode == "PathNotFound")
                 {
                     // File doesn't exist, which is fine for our purposes
-                    _logger.LogDebug("File {Path} didn't exist when trying to delete it, continuing with upload", 
+                    _logger.LogDebug("File {Path} didn't exist when trying to delete it, continuing with upload",
                         fileClient.Path);
                 }
             }
-            
+
             // Upload the entire stream at once
             await fileClient.UploadAsync(stream, overwrite: false);
         }
@@ -343,13 +343,22 @@ public class LakeContext : ILakeContext, IDisposable
             }
             catch (Exception retryEx)
             {
+                // Cleanup any partial upload before rethrowing
+                await CleanupPartialUploadAsync(fileClient);
                 throw new InvalidOperationException($"Failed to upload Parquet file after retry: {retryEx.Message}", retryEx);
             }
         }
+        catch (Exception ex)
+        {
+            // CRITICAL: UploadAsync internally does Create->Append->Flush (NOT atomic).
+            // Network failure after Create but before Append leaves a zero-byte blob.
+            // We MUST cleanup before rethrowing to prevent corrupted files in Data Lake.
+            _logger.LogWarning(ex, "Upload failed for {Path}, checking for partial upload to cleanup", fileClient.Path);
+            await CleanupPartialUploadAsync(fileClient);
+            throw;
+        }
 
-        // Post-upload validation: only reached if upload succeeded (either primary or retry path).
-        // If UploadAsync threw a non-PathAlreadyExists exception, it propagated up and we never reach here.
-        // That's correct: a failed upload means no blob to validate, and the exception triggers retry.
+        // Post-upload validation: defense-in-depth for successful uploads
         await ValidateUploadedBlobAsync(fileClient, fileClient.Path);
 
         _logger.LogInformation("Successfully stored Parquet file at {Path} in file system {FileSystem}",
@@ -466,11 +475,22 @@ public class LakeContext : ILakeContext, IDisposable
             }
             catch (Exception retryEx)
             {
+                // Cleanup any partial upload before rethrowing
+                await CleanupPartialUploadAsync(fileClient);
                 throw new InvalidOperationException($"Failed to upload Parquet file after retry: {retryEx.Message}", retryEx);
             }
         }
+        catch (Exception ex)
+        {
+            // CRITICAL: UploadAsync internally does Create->Append->Flush (NOT atomic).
+            // Network failure after Create but before Append leaves a zero-byte blob.
+            // We MUST cleanup before rethrowing to prevent corrupted files in Data Lake.
+            _logger.LogWarning(ex, "Upload failed for {Path}, checking for partial upload to cleanup", fileClient.Path);
+            await CleanupPartialUploadAsync(fileClient);
+            throw;
+        }
 
-        // Post-upload validation: only reached if upload succeeded (see StoreItemAsParquet for rationale)
+        // Post-upload validation: defense-in-depth for successful uploads
         await ValidateUploadedBlobAsync(fileClient, fileClient.Path);
 
         _logger.LogInformation("Successfully stored Parquet file with multiple items at {Path} in file system {FileSystem}",
@@ -536,40 +556,51 @@ public class LakeContext : ILakeContext, IDisposable
             catch (Azure.RequestFailedException ex) when (ex.ErrorCode == "PathNotFound")
             {
                 // File doesn't exist, which is fine for our purposes
-                _logger.LogDebug("File {Path} didn't exist when trying to delete it, continuing with upload", 
+                _logger.LogDebug("File {Path} didn't exist when trying to delete it, continuing with upload",
                     fileClient.Path);
             }
-            
+
             // Upload the entire stream at once
             await fileClient.UploadAsync(stream, overwrite: false);
         }
         catch (Azure.RequestFailedException ex) when (ex.ErrorCode == "PathAlreadyExists")
         {
             // If the path already exists, try the delete-then-upload approach again
-            _logger.LogDebug("Path {Path} already exists, retrying with explicit delete-then-create approach", 
+            _logger.LogDebug("Path {Path} already exists, retrying with explicit delete-then-create approach",
                 fileClient.Path);
-                
+
             try
             {
                 // Reset stream position
                 stream.Position = 0;
-                
+
                 // Delete the file explicitly
                 await fileClient.DeleteAsync();
-                
+
                 // Wait a short time to ensure deletion is processed
                 await Task.Delay(100);
-                
+
                 // Upload again
                 await fileClient.UploadAsync(stream, overwrite: false);
             }
             catch (Exception retryEx)
             {
+                // Cleanup any partial upload before rethrowing
+                await CleanupPartialUploadAsync(fileClient);
                 throw new InvalidOperationException($"Failed to upload Parquet file after retry: {retryEx.Message}", retryEx);
             }
         }
+        catch (Exception ex)
+        {
+            // CRITICAL: UploadAsync internally does Create->Append->Flush (NOT atomic).
+            // Network failure after Create but before Append leaves a zero-byte blob.
+            // We MUST cleanup before rethrowing to prevent corrupted files in Data Lake.
+            _logger.LogWarning(ex, "Upload failed for {Path}, checking for partial upload to cleanup", fileClient.Path);
+            await CleanupPartialUploadAsync(fileClient);
+            throw;
+        }
 
-        // Post-upload validation: only reached if upload succeeded (see StoreItemAsParquet for rationale)
+        // Post-upload validation: defense-in-depth for successful uploads
         await ValidateUploadedBlobAsync(fileClient, fileClient.Path);
 
         _logger.LogInformation("Successfully updated Parquet file at {Path} in file system {FileSystem}",
@@ -647,40 +678,51 @@ public class LakeContext : ILakeContext, IDisposable
             catch (Azure.RequestFailedException ex) when (ex.ErrorCode == "PathNotFound")
             {
                 // File doesn't exist, which is fine for our purposes
-                _logger.LogDebug("File {Path} didn't exist when trying to delete it, continuing with upload", 
+                _logger.LogDebug("File {Path} didn't exist when trying to delete it, continuing with upload",
                     fileClient.Path);
             }
-            
+
             // Upload the entire stream at once
             await fileClient.UploadAsync(stream, overwrite: false);
         }
         catch (Azure.RequestFailedException ex) when (ex.ErrorCode == "PathAlreadyExists")
         {
             // If the path already exists, try the delete-then-upload approach again
-            _logger.LogDebug("Path {Path} already exists, retrying with explicit delete-then-create approach", 
+            _logger.LogDebug("Path {Path} already exists, retrying with explicit delete-then-create approach",
                 fileClient.Path);
-                
+
             try
             {
                 // Reset stream position
                 stream.Position = 0;
-                
+
                 // Delete the file explicitly
                 await fileClient.DeleteAsync();
-                
+
                 // Wait a short time to ensure deletion is processed
                 await Task.Delay(100);
-                
+
                 // Upload again
                 await fileClient.UploadAsync(stream, overwrite: false);
             }
             catch (Exception retryEx)
             {
+                // Cleanup any partial upload before rethrowing
+                await CleanupPartialUploadAsync(fileClient);
                 throw new InvalidOperationException($"Failed to upload Parquet file after retry: {retryEx.Message}", retryEx);
             }
         }
+        catch (Exception ex)
+        {
+            // CRITICAL: UploadAsync internally does Create->Append->Flush (NOT atomic).
+            // Network failure after Create but before Append leaves a zero-byte blob.
+            // We MUST cleanup before rethrowing to prevent corrupted files in Data Lake.
+            _logger.LogWarning(ex, "Upload failed for {Path}, checking for partial upload to cleanup", fileClient.Path);
+            await CleanupPartialUploadAsync(fileClient);
+            throw;
+        }
 
-        // Post-upload validation: only reached if upload succeeded (see StoreItemAsParquet for rationale)
+        // Post-upload validation: defense-in-depth for successful uploads
         await ValidateUploadedBlobAsync(fileClient, fileClient.Path);
 
         _logger.LogInformation("Successfully updated Parquet file with multiple items at {Path} in file system {FileSystem}",
@@ -1099,11 +1141,7 @@ public class LakeContext : ILakeContext, IDisposable
     /// <summary>
     /// Validates that an uploaded blob meets the minimum size for a valid Parquet file.
     /// If validation fails, the blob is deleted and an InvalidOperationException is thrown.
-    /// This only runs after a SUCCESSFUL upload. If UploadAsync throws (e.g., network failure),
-    /// the exception propagates naturally and triggers Service Bus retry -- there is no
-    /// successfully-written blob to validate in that case.
-    /// Root cause (INV-01): UploadAsync internally performs Create+Append+Flush which is NOT atomic.
-    /// Network failure after Create leaves zero-byte blob.
+    /// This is defense-in-depth after successful uploads; CleanupPartialUploadAsync handles failed uploads.
     /// </summary>
     private async Task ValidateUploadedBlobAsync(DataLakeFileClient fileClient, string filePath, long minimumBytes = 12)
     {
@@ -1123,6 +1161,42 @@ public class LakeContext : ILakeContext, IDisposable
             throw new InvalidOperationException(
                 $"Post-upload validation failed: blob '{filePath}' is {uploadedSize} bytes " +
                 $"(minimum {minimumBytes}). Corrupted blob deleted.");
+        }
+    }
+
+    /// <summary>
+    /// Cleans up a partial/failed upload by deleting the blob if it exists and is invalid.
+    /// Called when UploadAsync throws an exception - the blob may or may not exist depending
+    /// on where in the Create->Append->Flush sequence the failure occurred.
+    /// Root cause (INV-01): UploadAsync is NOT atomic. Network failure after Create leaves zero-byte blob.
+    /// </summary>
+    private async Task CleanupPartialUploadAsync(DataLakeFileClient fileClient, long minimumBytes = 12)
+    {
+        try
+        {
+            if (!await fileClient.ExistsAsync())
+            {
+                // No blob was created, nothing to cleanup
+                return;
+            }
+
+            var properties = await fileClient.GetPropertiesAsync();
+            var blobSize = properties.Value.ContentLength;
+
+            if (blobSize < minimumBytes)
+            {
+                _logger.LogWarning(
+                    "Cleaning up partial upload: blob {FilePath} is {BlobSize} bytes (minimum valid is {MinimumBytes}). Deleting.",
+                    fileClient.Path, blobSize, minimumBytes);
+
+                await fileClient.DeleteAsync();
+            }
+            // If blob is >= minimumBytes, it might be a valid previous version - don't delete
+        }
+        catch (Exception cleanupEx)
+        {
+            // Don't let cleanup failure mask the original exception
+            _logger.LogWarning(cleanupEx, "Failed to cleanup partial upload at {FilePath}", fileClient.Path);
         }
     }
 

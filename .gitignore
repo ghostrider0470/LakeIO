@@ -712,3 +712,5 @@ appsettings.json
 
 # User secrets
 secrets.json
+.planning/*
+.planning
