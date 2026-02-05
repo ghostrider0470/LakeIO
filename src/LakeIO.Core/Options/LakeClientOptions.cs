@@ -25,6 +25,25 @@ public class LakeClientOptions
     /// <summary>CSV format options used by Csv operations.</summary>
     public CsvFormatOptions Csv { get; } = new();
 
+    /// <summary>
+    /// Default Parquet compression method name. Default: "Snappy".
+    /// </summary>
+    /// <remarks>
+    /// Stored as a string because LakeIO.Core does not reference Parquet.Net.
+    /// ParquetOperations maps this to <c>Parquet.CompressionMethod</c> internally.
+    /// Supported values: "None", "Snappy", "Gzip", "Lzo", "Brotli", "LZ4", "Zstd".
+    /// </remarks>
+    public string DefaultParquetCompression { get; set; } = "Snappy";
+
+    /// <summary>
+    /// Default number of rows per Parquet row group. Default: 10,000.
+    /// </summary>
+    /// <remarks>
+    /// A moderate default suited for ADLS upload patterns where entire MemoryStream
+    /// is uploaded after write. Larger row groups improve read performance but use more memory.
+    /// </remarks>
+    public int DefaultParquetRowGroupSize { get; set; } = 10_000;
+
     /// <summary>Operation timeout. Default: 5 minutes.</summary>
     public TimeSpan OperationTimeout { get; set; } = TimeSpan.FromMinutes(5);
 
