@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Azure;
@@ -68,36 +69,70 @@ public class ParquetOperations
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         ArgumentNullException.ThrowIfNull(items);
 
-        var (compression, rowGroupSize) = ResolveOptions(options);
-        var serializerOptions = new ParquetSerializerOptions
+        using var activity = LakeIOActivitySource.Source.StartActivity("parquet.write");
+        activity?.SetTag("lakeio.filesystem", _fileSystemClient!.Name);
+        activity?.SetTag("lakeio.path", path);
+        activity?.SetTag("lakeio.operation", "parquet.write");
+
+        var startTimestamp = Stopwatch.GetTimestamp();
+        try
         {
-            CompressionMethod = compression,
-            RowGroupSize = rowGroupSize
-        };
-
-        using var memoryStream = StreamPool.Manager.GetStream("ParquetOperations.WriteAsync");
-        await ParquetSerializer.SerializeAsync(items, memoryStream, serializerOptions, cancellationToken).ConfigureAwait(false);
-        memoryStream.Position = 0;
-
-        var fileClient = _fileSystemClient!.GetFileClient(path);
-        var uploadOptions = new DataLakeFileUploadOptions();
-
-        if (!overwrite)
-        {
-            uploadOptions.Conditions = new DataLakeRequestConditions { IfNoneMatch = new ETag("*") };
-        }
-
-        var response = await fileClient.UploadAsync(memoryStream, uploadOptions, cancellationToken).ConfigureAwait(false);
-
-        return new Response<StorageResult>(
-            new StorageResult
+            var (compression, rowGroupSize) = ResolveOptions(options);
+            var serializerOptions = new ParquetSerializerOptions
             {
-                Path = fileClient.Path,
-                ETag = response.Value.ETag,
-                LastModified = response.Value.LastModified,
-                ContentLength = memoryStream.Length
-            },
-            response.GetRawResponse());
+                CompressionMethod = compression,
+                RowGroupSize = rowGroupSize
+            };
+
+            using var memoryStream = StreamPool.Manager.GetStream("ParquetOperations.WriteAsync");
+            await ParquetSerializer.SerializeAsync(items, memoryStream, serializerOptions, cancellationToken).ConfigureAwait(false);
+            memoryStream.Position = 0;
+
+            var fileClient = _fileSystemClient!.GetFileClient(path);
+            var uploadOptions = new DataLakeFileUploadOptions();
+
+            if (!overwrite)
+            {
+                uploadOptions.Conditions = new DataLakeRequestConditions { IfNoneMatch = new ETag("*") };
+            }
+
+            var response = await fileClient.UploadAsync(memoryStream, uploadOptions, cancellationToken).ConfigureAwait(false);
+
+            var result = new Response<StorageResult>(
+                new StorageResult
+                {
+                    Path = fileClient.Path,
+                    ETag = response.Value.ETag,
+                    LastModified = response.Value.LastModified,
+                    ContentLength = memoryStream.Length
+                },
+                response.GetRawResponse());
+
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "parquet.write"));
+            LakeIOMetrics.BytesTransferred.Add(memoryStream.Length,
+                new KeyValuePair<string, object?>("direction", "write"));
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "parquet.write"));
+
+            activity?.SetTag("lakeio.bytes", memoryStream.Length);
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("lakeio.error", true);
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "parquet.write"),
+                new KeyValuePair<string, object?>("error", "true"));
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "parquet.write"),
+                new KeyValuePair<string, object?>("error", "true"));
+            throw;
+        }
     }
 
     /// <summary>
@@ -133,36 +168,70 @@ public class ParquetOperations
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         ArgumentNullException.ThrowIfNull(items);
 
-        var (compression, rowGroupSize) = ResolveOptions(options);
-        var serializerOptions = new ParquetSerializerOptions
+        using var activity = LakeIOActivitySource.Source.StartActivity("parquet.write_stream");
+        activity?.SetTag("lakeio.filesystem", _fileSystemClient!.Name);
+        activity?.SetTag("lakeio.path", path);
+        activity?.SetTag("lakeio.operation", "parquet.write_stream");
+
+        var startTimestamp = Stopwatch.GetTimestamp();
+        try
         {
-            CompressionMethod = compression,
-            RowGroupSize = rowGroupSize
-        };
-
-        using var memoryStream = StreamPool.Manager.GetStream("ParquetOperations.WriteStreamAsync");
-        await ParquetSerializer.SerializeAsync(items, memoryStream, serializerOptions, cancellationToken).ConfigureAwait(false);
-        memoryStream.Position = 0;
-
-        var fileClient = _fileSystemClient!.GetFileClient(path);
-        var uploadOptions = new DataLakeFileUploadOptions();
-
-        if (!overwrite)
-        {
-            uploadOptions.Conditions = new DataLakeRequestConditions { IfNoneMatch = new ETag("*") };
-        }
-
-        var response = await fileClient.UploadAsync(memoryStream, uploadOptions, cancellationToken).ConfigureAwait(false);
-
-        return new Response<StorageResult>(
-            new StorageResult
+            var (compression, rowGroupSize) = ResolveOptions(options);
+            var serializerOptions = new ParquetSerializerOptions
             {
-                Path = fileClient.Path,
-                ETag = response.Value.ETag,
-                LastModified = response.Value.LastModified,
-                ContentLength = memoryStream.Length
-            },
-            response.GetRawResponse());
+                CompressionMethod = compression,
+                RowGroupSize = rowGroupSize
+            };
+
+            using var memoryStream = StreamPool.Manager.GetStream("ParquetOperations.WriteStreamAsync");
+            await ParquetSerializer.SerializeAsync(items, memoryStream, serializerOptions, cancellationToken).ConfigureAwait(false);
+            memoryStream.Position = 0;
+
+            var fileClient = _fileSystemClient!.GetFileClient(path);
+            var uploadOptions = new DataLakeFileUploadOptions();
+
+            if (!overwrite)
+            {
+                uploadOptions.Conditions = new DataLakeRequestConditions { IfNoneMatch = new ETag("*") };
+            }
+
+            var response = await fileClient.UploadAsync(memoryStream, uploadOptions, cancellationToken).ConfigureAwait(false);
+
+            var result = new Response<StorageResult>(
+                new StorageResult
+                {
+                    Path = fileClient.Path,
+                    ETag = response.Value.ETag,
+                    LastModified = response.Value.LastModified,
+                    ContentLength = memoryStream.Length
+                },
+                response.GetRawResponse());
+
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "parquet.write_stream"));
+            LakeIOMetrics.BytesTransferred.Add(memoryStream.Length,
+                new KeyValuePair<string, object?>("direction", "write"));
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "parquet.write_stream"));
+
+            activity?.SetTag("lakeio.bytes", memoryStream.Length);
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("lakeio.error", true);
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "parquet.write_stream"),
+                new KeyValuePair<string, object?>("error", "true"));
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "parquet.write_stream"),
+                new KeyValuePair<string, object?>("error", "true"));
+            throw;
+        }
     }
 
     /// <summary>
@@ -194,15 +263,50 @@ public class ParquetOperations
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
-        var fileClient = _fileSystemClient!.GetFileClient(path);
+        using var activity = LakeIOActivitySource.Source.StartActivity("parquet.read_stream");
+        activity?.SetTag("lakeio.filesystem", _fileSystemClient!.Name);
+        activity?.SetTag("lakeio.path", path);
+        activity?.SetTag("lakeio.operation", "parquet.read_stream");
 
-        await using var stream = await fileClient.OpenReadAsync(
-            new DataLakeOpenReadOptions(allowModifications: false),
-            cancellationToken).ConfigureAwait(false);
-
-        await foreach (var item in ParquetSerializer.DeserializeAllAsync<T>(stream, cancellationToken: cancellationToken).ConfigureAwait(false))
+        var startTimestamp = Stopwatch.GetTimestamp();
+        var success = false;
+        try
         {
-            yield return item;
+            var fileClient = _fileSystemClient!.GetFileClient(path);
+
+            await using var stream = await fileClient.OpenReadAsync(
+                new DataLakeOpenReadOptions(allowModifications: false),
+                cancellationToken).ConfigureAwait(false);
+
+            await foreach (var item in ParquetSerializer.DeserializeAllAsync<T>(stream, cancellationToken: cancellationToken).ConfigureAwait(false))
+            {
+                yield return item;
+            }
+
+            success = true;
+        }
+        finally
+        {
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            if (success)
+            {
+                LakeIOMetrics.OperationsTotal.Add(1,
+                    new KeyValuePair<string, object?>("operation_type", "parquet.read_stream"));
+                LakeIOMetrics.OperationDuration.Record(elapsed,
+                    new KeyValuePair<string, object?>("operation_type", "parquet.read_stream"));
+                activity?.SetStatus(ActivityStatusCode.Ok);
+            }
+            else
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, "Operation failed");
+                activity?.SetTag("lakeio.error", true);
+                LakeIOMetrics.OperationsTotal.Add(1,
+                    new KeyValuePair<string, object?>("operation_type", "parquet.read_stream"),
+                    new KeyValuePair<string, object?>("error", "true"));
+                LakeIOMetrics.OperationDuration.Record(elapsed,
+                    new KeyValuePair<string, object?>("operation_type", "parquet.read_stream"),
+                    new KeyValuePair<string, object?>("error", "true"));
+            }
         }
     }
 
@@ -224,14 +328,44 @@ public class ParquetOperations
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
-        var fileClient = _fileSystemClient!.GetFileClient(path);
+        using var activity = LakeIOActivitySource.Source.StartActivity("parquet.get_schema");
+        activity?.SetTag("lakeio.filesystem", _fileSystemClient!.Name);
+        activity?.SetTag("lakeio.path", path);
+        activity?.SetTag("lakeio.operation", "parquet.get_schema");
 
-        await using var stream = await fileClient.OpenReadAsync(
-            new DataLakeOpenReadOptions(allowModifications: false),
-            cancellationToken).ConfigureAwait(false);
+        var startTimestamp = Stopwatch.GetTimestamp();
+        try
+        {
+            var fileClient = _fileSystemClient!.GetFileClient(path);
 
-        using var reader = await ParquetReader.CreateAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
-        return reader.Schema;
+            await using var stream = await fileClient.OpenReadAsync(
+                new DataLakeOpenReadOptions(allowModifications: false),
+                cancellationToken).ConfigureAwait(false);
+
+            using var reader = await ParquetReader.CreateAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "parquet.get_schema"));
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "parquet.get_schema"));
+
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return reader.Schema;
+        }
+        catch (Exception ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("lakeio.error", true);
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "parquet.get_schema"),
+                new KeyValuePair<string, object?>("error", "true"));
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "parquet.get_schema"),
+                new KeyValuePair<string, object?>("error", "true"));
+            throw;
+        }
     }
 
     /// <summary>
@@ -268,74 +402,118 @@ public class ParquetOperations
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         ArgumentNullException.ThrowIfNull(items);
 
-        var fileClient = _fileSystemClient!.GetFileClient(path);
+        using var activity = LakeIOActivitySource.Source.StartActivity("parquet.merge");
+        activity?.SetTag("lakeio.filesystem", _fileSystemClient!.Name);
+        activity?.SetTag("lakeio.path", path);
+        activity?.SetTag("lakeio.operation", "parquet.merge");
 
-        // Check if file exists
-        bool fileExists;
+        var startTimestamp = Stopwatch.GetTimestamp();
         try
         {
-            await fileClient.GetPropertiesAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-            fileExists = true;
-        }
-        catch (RequestFailedException ex) when (ex.ErrorCode is "PathNotFound" or "BlobNotFound")
-        {
-            fileExists = false;
-        }
+            var fileClient = _fileSystemClient!.GetFileClient(path);
 
-        // If file doesn't exist, delegate to WriteAsync for initial creation
-        if (!fileExists)
-        {
-            return await WriteAsync(path, items, options, overwrite: true, cancellationToken).ConfigureAwait(false);
-        }
-
-        // File exists: download, evolve schema, append new row group, re-upload
-        var (compression, rowGroupSize) = ResolveOptions(options);
-
-        // Read existing schema from file footer
-        await using var downloadStream = await fileClient.OpenReadAsync(
-            new DataLakeOpenReadOptions(allowModifications: false), cancellationToken).ConfigureAwait(false);
-
-        // Copy to a seekable pooled MemoryStream (needed for Parquet append)
-        using var fileStream = StreamPool.Manager.GetStream("ParquetOperations.MergeAsync");
-        await downloadStream.CopyToAsync(fileStream, cancellationToken).ConfigureAwait(false);
-        fileStream.Position = 0;
-
-        // Read existing schema and get incoming schema from CLR type
-        using var reader = await ParquetReader.CreateAsync(fileStream, cancellationToken: cancellationToken).ConfigureAwait(false);
-        var existingSchema = reader.Schema;
-        var incomingSchema = typeof(T).GetParquetSchema(forWriting: true);
-
-        // Evolve schema (preserves existing column order, appends new as nullable)
-        var evolver = new SchemaEvolver();
-        var mergedSchema = evolver.Evolve(existingSchema, incomingSchema);
-
-        // Reset stream for append (Parquet.Net reads footer, appends row group, writes new footer)
-        fileStream.Position = 0;
-
-        var serializerOptions = new ParquetSerializerOptions
-        {
-            CompressionMethod = compression,
-            RowGroupSize = rowGroupSize,
-            Append = true
-        };
-
-        await ParquetSerializer.SerializeAsync(items, fileStream, serializerOptions, cancellationToken).ConfigureAwait(false);
-
-        // Upload the merged file
-        fileStream.Position = 0;
-        var uploadOptions = new DataLakeFileUploadOptions();
-
-        var response = await fileClient.UploadAsync(fileStream, uploadOptions, cancellationToken).ConfigureAwait(false);
-
-        return new Response<StorageResult>(
-            new StorageResult
+            // Check if file exists
+            bool fileExists;
+            try
             {
-                Path = fileClient.Path,
-                ETag = response.Value.ETag,
-                LastModified = response.Value.LastModified,
-                ContentLength = fileStream.Length
-            },
-            response.GetRawResponse());
+                await fileClient.GetPropertiesAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                fileExists = true;
+            }
+            catch (RequestFailedException ex) when (ex.ErrorCode is "PathNotFound" or "BlobNotFound")
+            {
+                fileExists = false;
+            }
+
+            // If file doesn't exist, delegate to WriteAsync for initial creation
+            if (!fileExists)
+            {
+                var writeResult = await WriteAsync(path, items, options, overwrite: true, cancellationToken).ConfigureAwait(false);
+
+                // WriteAsync records its own bytes -- only record merge operation count and duration here
+                var elapsedNew = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+                LakeIOMetrics.OperationsTotal.Add(1,
+                    new KeyValuePair<string, object?>("operation_type", "parquet.merge"));
+                LakeIOMetrics.OperationDuration.Record(elapsedNew,
+                    new KeyValuePair<string, object?>("operation_type", "parquet.merge"));
+
+                activity?.SetStatus(ActivityStatusCode.Ok);
+                return writeResult;
+            }
+
+            // File exists: download, evolve schema, append new row group, re-upload
+            var (compression, rowGroupSize) = ResolveOptions(options);
+
+            // Read existing schema from file footer
+            await using var downloadStream = await fileClient.OpenReadAsync(
+                new DataLakeOpenReadOptions(allowModifications: false), cancellationToken).ConfigureAwait(false);
+
+            // Copy to a seekable pooled MemoryStream (needed for Parquet append)
+            using var fileStream = StreamPool.Manager.GetStream("ParquetOperations.MergeAsync");
+            await downloadStream.CopyToAsync(fileStream, cancellationToken).ConfigureAwait(false);
+            fileStream.Position = 0;
+
+            // Read existing schema and get incoming schema from CLR type
+            using var reader = await ParquetReader.CreateAsync(fileStream, cancellationToken: cancellationToken).ConfigureAwait(false);
+            var existingSchema = reader.Schema;
+            var incomingSchema = typeof(T).GetParquetSchema(forWriting: true);
+
+            // Evolve schema (preserves existing column order, appends new as nullable)
+            var evolver = new SchemaEvolver();
+            var mergedSchema = evolver.Evolve(existingSchema, incomingSchema);
+
+            // Reset stream for append (Parquet.Net reads footer, appends row group, writes new footer)
+            fileStream.Position = 0;
+
+            var serializerOptions = new ParquetSerializerOptions
+            {
+                CompressionMethod = compression,
+                RowGroupSize = rowGroupSize,
+                Append = true
+            };
+
+            await ParquetSerializer.SerializeAsync(items, fileStream, serializerOptions, cancellationToken).ConfigureAwait(false);
+
+            // Upload the merged file
+            fileStream.Position = 0;
+            var uploadOptions = new DataLakeFileUploadOptions();
+
+            var response = await fileClient.UploadAsync(fileStream, uploadOptions, cancellationToken).ConfigureAwait(false);
+
+            var result = new Response<StorageResult>(
+                new StorageResult
+                {
+                    Path = fileClient.Path,
+                    ETag = response.Value.ETag,
+                    LastModified = response.Value.LastModified,
+                    ContentLength = fileStream.Length
+                },
+                response.GetRawResponse());
+
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "parquet.merge"));
+            LakeIOMetrics.BytesTransferred.Add(fileStream.Length,
+                new KeyValuePair<string, object?>("direction", "write"));
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "parquet.merge"));
+
+            activity?.SetTag("lakeio.bytes", fileStream.Length);
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("lakeio.error", true);
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "parquet.merge"),
+                new KeyValuePair<string, object?>("error", "true"));
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "parquet.merge"),
+                new KeyValuePair<string, object?>("error", "true"));
+            throw;
+        }
     }
 
     /// <summary>
@@ -374,29 +552,62 @@ public class ParquetOperations
         ArgumentException.ThrowIfNullOrWhiteSpace(ndjsonPath);
         ArgumentException.ThrowIfNullOrWhiteSpace(parquetPath);
 
-        // Read NDJSON via streaming deserialization
-        var fileClient = _fileSystemClient!.GetFileClient(ndjsonPath);
-        await using var stream = await fileClient.OpenReadAsync(
-            new DataLakeOpenReadOptions(allowModifications: false), cancellationToken).ConfigureAwait(false);
+        using var activity = LakeIOActivitySource.Source.StartActivity("parquet.compact_ndjson");
+        activity?.SetTag("lakeio.filesystem", _fileSystemClient!.Name);
+        activity?.SetTag("lakeio.path", ndjsonPath);
+        activity?.SetTag("lakeio.destination_path", parquetPath);
+        activity?.SetTag("lakeio.operation", "parquet.compact_ndjson");
 
-        var jsonOptions = _options!.JsonSerializerOptions;
-        var items = JsonSerializer.DeserializeAsyncEnumerable<T>(
-            stream,
-            topLevelValues: true,
-            jsonOptions,
-            cancellationToken);
-
-        // Filter nulls (DeserializeAsyncEnumerable can yield null for invalid lines)
-        async IAsyncEnumerable<T> FilterNulls([EnumeratorCancellation] CancellationToken ct = default)
+        var startTimestamp = Stopwatch.GetTimestamp();
+        try
         {
-            await foreach (var item in items.WithCancellation(ct).ConfigureAwait(false))
-            {
-                if (item is not null) yield return item;
-            }
-        }
+            // Read NDJSON via streaming deserialization
+            var fileClient = _fileSystemClient!.GetFileClient(ndjsonPath);
+            await using var stream = await fileClient.OpenReadAsync(
+                new DataLakeOpenReadOptions(allowModifications: false), cancellationToken).ConfigureAwait(false);
 
-        // Pipe NDJSON items through Parquet streaming write (bounded memory)
-        return await WriteStreamAsync(parquetPath, FilterNulls(cancellationToken), options, overwrite, cancellationToken).ConfigureAwait(false);
+            var jsonOptions = _options!.JsonSerializerOptions;
+            var items = JsonSerializer.DeserializeAsyncEnumerable<T>(
+                stream,
+                topLevelValues: true,
+                jsonOptions,
+                cancellationToken);
+
+            // Filter nulls (DeserializeAsyncEnumerable can yield null for invalid lines)
+            async IAsyncEnumerable<T> FilterNulls([EnumeratorCancellation] CancellationToken ct = default)
+            {
+                await foreach (var item in items.WithCancellation(ct).ConfigureAwait(false))
+                {
+                    if (item is not null) yield return item;
+                }
+            }
+
+            // Pipe NDJSON items through Parquet streaming write (bounded memory)
+            // WriteStreamAsync records its own bytes -- only record compact operation count and duration here
+            var result = await WriteStreamAsync(parquetPath, FilterNulls(cancellationToken), options, overwrite, cancellationToken).ConfigureAwait(false);
+
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "parquet.compact_ndjson"));
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "parquet.compact_ndjson"));
+
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("lakeio.error", true);
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "parquet.compact_ndjson"),
+                new KeyValuePair<string, object?>("error", "true"));
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "parquet.compact_ndjson"),
+                new KeyValuePair<string, object?>("error", "true"));
+            throw;
+        }
     }
 
     /// <summary>
