@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -63,40 +64,74 @@ public class CsvOperations
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         ArgumentNullException.ThrowIfNull(items);
 
-        var config = BuildCsvConfiguration(options);
-        var fileClient = _fileSystemClient!.GetFileClient(path);
+        using var activity = LakeIOActivitySource.Source.StartActivity("csv.write");
+        activity?.SetTag("lakeio.filesystem", _fileSystemClient!.Name);
+        activity?.SetTag("lakeio.path", path);
+        activity?.SetTag("lakeio.operation", "csv.write");
 
-        using var memoryStream = new MemoryStream();
-        await using (var writer = new StreamWriter(memoryStream, new UTF8Encoding(false), leaveOpen: true))
-        await using (var csvWriter = new CsvWriter(writer, config))
+        var startTimestamp = Stopwatch.GetTimestamp();
+        try
         {
-            await csvWriter.WriteRecordsAsync(items, cancellationToken).ConfigureAwait(false);
-        }
+            var config = BuildCsvConfiguration(options);
+            var fileClient = _fileSystemClient!.GetFileClient(path);
 
-        memoryStream.Position = 0;
-
-        var uploadOptions = new DataLakeFileUploadOptions
-        {
-            HttpHeaders = new PathHttpHeaders { ContentType = "text/csv" }
-        };
-
-        if (!overwrite)
-        {
-            uploadOptions.Conditions = new DataLakeRequestConditions { IfNoneMatch = new ETag("*") };
-        }
-
-        var response = await fileClient.UploadAsync(memoryStream, uploadOptions, cancellationToken)
-            .ConfigureAwait(false);
-
-        return new Response<StorageResult>(
-            new StorageResult
+            using var memoryStream = new MemoryStream();
+            await using (var writer = new StreamWriter(memoryStream, new UTF8Encoding(false), leaveOpen: true))
+            await using (var csvWriter = new CsvWriter(writer, config))
             {
-                Path = fileClient.Path,
-                ETag = response.Value.ETag,
-                LastModified = response.Value.LastModified,
-                ContentLength = memoryStream.Length
-            },
-            response.GetRawResponse());
+                await csvWriter.WriteRecordsAsync(items, cancellationToken).ConfigureAwait(false);
+            }
+
+            memoryStream.Position = 0;
+
+            var uploadOptions = new DataLakeFileUploadOptions
+            {
+                HttpHeaders = new PathHttpHeaders { ContentType = "text/csv" }
+            };
+
+            if (!overwrite)
+            {
+                uploadOptions.Conditions = new DataLakeRequestConditions { IfNoneMatch = new ETag("*") };
+            }
+
+            var response = await fileClient.UploadAsync(memoryStream, uploadOptions, cancellationToken)
+                .ConfigureAwait(false);
+
+            var result = new Response<StorageResult>(
+                new StorageResult
+                {
+                    Path = fileClient.Path,
+                    ETag = response.Value.ETag,
+                    LastModified = response.Value.LastModified,
+                    ContentLength = memoryStream.Length
+                },
+                response.GetRawResponse());
+
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "csv.write"));
+            LakeIOMetrics.BytesTransferred.Add(memoryStream.Length,
+                new KeyValuePair<string, object?>("direction", "write"));
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "csv.write"));
+
+            activity?.SetTag("lakeio.bytes", memoryStream.Length);
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("lakeio.error", true);
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "csv.write"),
+                new KeyValuePair<string, object?>("error", "true"));
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "csv.write"),
+                new KeyValuePair<string, object?>("error", "true"));
+            throw;
+        }
     }
 
     /// <summary>
@@ -114,23 +149,54 @@ public class CsvOperations
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
-        var config = BuildCsvConfiguration(options);
-        var fileClient = _fileSystemClient!.GetFileClient(path);
+        using var activity = LakeIOActivitySource.Source.StartActivity("csv.read");
+        activity?.SetTag("lakeio.filesystem", _fileSystemClient!.Name);
+        activity?.SetTag("lakeio.path", path);
+        activity?.SetTag("lakeio.operation", "csv.read");
 
-        var downloadInfo = await fileClient.ReadStreamingAsync(
-            cancellationToken: cancellationToken).ConfigureAwait(false);
-
-        await using var content = downloadInfo.Value.Content;
-        using var reader = new StreamReader(content, new UTF8Encoding(false));
-        using var csvReader = new CsvReader(reader, config);
-
-        var records = new List<T>();
-        await foreach (var record in csvReader.GetRecordsAsync<T>(cancellationToken).ConfigureAwait(false))
+        var startTimestamp = Stopwatch.GetTimestamp();
+        try
         {
-            records.Add(record);
-        }
+            var config = BuildCsvConfiguration(options);
+            var fileClient = _fileSystemClient!.GetFileClient(path);
 
-        return new Response<IReadOnlyList<T>>(records, downloadInfo.GetRawResponse());
+            var downloadInfo = await fileClient.ReadStreamingAsync(
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            await using var content = downloadInfo.Value.Content;
+            using var reader = new StreamReader(content, new UTF8Encoding(false));
+            using var csvReader = new CsvReader(reader, config);
+
+            var records = new List<T>();
+            await foreach (var record in csvReader.GetRecordsAsync<T>(cancellationToken).ConfigureAwait(false))
+            {
+                records.Add(record);
+            }
+
+            var result = new Response<IReadOnlyList<T>>(records, downloadInfo.GetRawResponse());
+
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "csv.read"));
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "csv.read"));
+
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("lakeio.error", true);
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "csv.read"),
+                new KeyValuePair<string, object?>("error", "true"));
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "csv.read"),
+                new KeyValuePair<string, object?>("error", "true"));
+            throw;
+        }
     }
 
     /// <summary>
@@ -149,19 +215,54 @@ public class CsvOperations
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
-        var config = BuildCsvConfiguration(options);
-        var fileClient = _fileSystemClient!.GetFileClient(path);
+        using var activity = LakeIOActivitySource.Source.StartActivity("csv.read_stream");
+        activity?.SetTag("lakeio.filesystem", _fileSystemClient!.Name);
+        activity?.SetTag("lakeio.path", path);
+        activity?.SetTag("lakeio.operation", "csv.read_stream");
 
-        await using var stream = await fileClient.OpenReadAsync(
-            new DataLakeOpenReadOptions(allowModifications: false),
-            cancellationToken).ConfigureAwait(false);
-
-        using var reader = new StreamReader(stream, new UTF8Encoding(false));
-        using var csvReader = new CsvReader(reader, config);
-
-        await foreach (var record in csvReader.GetRecordsAsync<T>(cancellationToken).ConfigureAwait(false))
+        var startTimestamp = Stopwatch.GetTimestamp();
+        var success = false;
+        try
         {
-            yield return record;
+            var config = BuildCsvConfiguration(options);
+            var fileClient = _fileSystemClient!.GetFileClient(path);
+
+            await using var stream = await fileClient.OpenReadAsync(
+                new DataLakeOpenReadOptions(allowModifications: false),
+                cancellationToken).ConfigureAwait(false);
+
+            using var reader = new StreamReader(stream, new UTF8Encoding(false));
+            using var csvReader = new CsvReader(reader, config);
+
+            await foreach (var record in csvReader.GetRecordsAsync<T>(cancellationToken).ConfigureAwait(false))
+            {
+                yield return record;
+            }
+
+            success = true;
+        }
+        finally
+        {
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            if (success)
+            {
+                LakeIOMetrics.OperationsTotal.Add(1,
+                    new KeyValuePair<string, object?>("operation_type", "csv.read_stream"));
+                LakeIOMetrics.OperationDuration.Record(elapsed,
+                    new KeyValuePair<string, object?>("operation_type", "csv.read_stream"));
+                activity?.SetStatus(ActivityStatusCode.Ok);
+            }
+            else
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, "Operation failed");
+                activity?.SetTag("lakeio.error", true);
+                LakeIOMetrics.OperationsTotal.Add(1,
+                    new KeyValuePair<string, object?>("operation_type", "csv.read_stream"),
+                    new KeyValuePair<string, object?>("error", "true"));
+                LakeIOMetrics.OperationDuration.Record(elapsed,
+                    new KeyValuePair<string, object?>("operation_type", "csv.read_stream"),
+                    new KeyValuePair<string, object?>("error", "true"));
+            }
         }
     }
 

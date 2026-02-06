@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
@@ -59,34 +60,68 @@ public class JsonOperations
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         ArgumentNullException.ThrowIfNull(value);
 
-        var jsonOptions = options?.SerializerOptions ?? _options!.JsonSerializerOptions;
-        var fileClient = _fileSystemClient!.GetFileClient(path);
+        using var activity = LakeIOActivitySource.Source.StartActivity("json.write");
+        activity?.SetTag("lakeio.filesystem", _fileSystemClient!.Name);
+        activity?.SetTag("lakeio.path", path);
+        activity?.SetTag("lakeio.operation", "json.write");
 
-        using var stream = new MemoryStream();
-        await JsonSerializer.SerializeAsync(stream, value, jsonOptions, cancellationToken).ConfigureAwait(false);
-        stream.Position = 0;
-
-        var uploadOptions = new DataLakeFileUploadOptions
+        var startTimestamp = Stopwatch.GetTimestamp();
+        try
         {
-            HttpHeaders = new PathHttpHeaders { ContentType = "application/json" }
-        };
+            var jsonOptions = options?.SerializerOptions ?? _options!.JsonSerializerOptions;
+            var fileClient = _fileSystemClient!.GetFileClient(path);
 
-        if (!overwrite)
-        {
-            uploadOptions.Conditions = new DataLakeRequestConditions { IfNoneMatch = new ETag("*") };
-        }
+            using var stream = new MemoryStream();
+            await JsonSerializer.SerializeAsync(stream, value, jsonOptions, cancellationToken).ConfigureAwait(false);
+            stream.Position = 0;
 
-        var response = await fileClient.UploadAsync(stream, uploadOptions, cancellationToken).ConfigureAwait(false);
-
-        return new Response<StorageResult>(
-            new StorageResult
+            var uploadOptions = new DataLakeFileUploadOptions
             {
-                Path = fileClient.Path,
-                ETag = response.Value.ETag,
-                LastModified = response.Value.LastModified,
-                ContentLength = stream.Length
-            },
-            response.GetRawResponse());
+                HttpHeaders = new PathHttpHeaders { ContentType = "application/json" }
+            };
+
+            if (!overwrite)
+            {
+                uploadOptions.Conditions = new DataLakeRequestConditions { IfNoneMatch = new ETag("*") };
+            }
+
+            var response = await fileClient.UploadAsync(stream, uploadOptions, cancellationToken).ConfigureAwait(false);
+
+            var result = new Response<StorageResult>(
+                new StorageResult
+                {
+                    Path = fileClient.Path,
+                    ETag = response.Value.ETag,
+                    LastModified = response.Value.LastModified,
+                    ContentLength = stream.Length
+                },
+                response.GetRawResponse());
+
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "json.write"));
+            LakeIOMetrics.BytesTransferred.Add(stream.Length,
+                new KeyValuePair<string, object?>("direction", "write"));
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "json.write"));
+
+            activity?.SetTag("lakeio.bytes", stream.Length);
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("lakeio.error", true);
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "json.write"),
+                new KeyValuePair<string, object?>("error", "true"));
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "json.write"),
+                new KeyValuePair<string, object?>("error", "true"));
+            throw;
+        }
     }
 
     /// <summary>
@@ -104,15 +139,46 @@ public class JsonOperations
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
-        var jsonOptions = options?.SerializerOptions ?? _options!.JsonSerializerOptions;
-        var fileClient = _fileSystemClient!.GetFileClient(path);
+        using var activity = LakeIOActivitySource.Source.StartActivity("json.read");
+        activity?.SetTag("lakeio.filesystem", _fileSystemClient!.Name);
+        activity?.SetTag("lakeio.path", path);
+        activity?.SetTag("lakeio.operation", "json.read");
 
-        var downloadInfo = await fileClient.ReadStreamingAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        var startTimestamp = Stopwatch.GetTimestamp();
+        try
+        {
+            var jsonOptions = options?.SerializerOptions ?? _options!.JsonSerializerOptions;
+            var fileClient = _fileSystemClient!.GetFileClient(path);
 
-        await using var content = downloadInfo.Value.Content;
-        var value = await JsonSerializer.DeserializeAsync<T>(content, jsonOptions, cancellationToken).ConfigureAwait(false);
+            var downloadInfo = await fileClient.ReadStreamingAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        return new Response<T?>(value, downloadInfo.GetRawResponse());
+            await using var content = downloadInfo.Value.Content;
+            var value = await JsonSerializer.DeserializeAsync<T>(content, jsonOptions, cancellationToken).ConfigureAwait(false);
+
+            var result = new Response<T?>(value, downloadInfo.GetRawResponse());
+
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "json.read"));
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "json.read"));
+
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("lakeio.error", true);
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "json.read"),
+                new KeyValuePair<string, object?>("error", "true"));
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "json.read"),
+                new KeyValuePair<string, object?>("error", "true"));
+            throw;
+        }
     }
 
     /// <summary>
@@ -134,48 +200,82 @@ public class JsonOperations
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         ArgumentNullException.ThrowIfNull(value);
 
-        var jsonOptions = options?.SerializerOptions ?? _options!.JsonSerializerOptions;
-        var fileClient = _fileSystemClient!.GetFileClient(path);
+        using var activity = LakeIOActivitySource.Source.StartActivity("json.append_ndjson");
+        activity?.SetTag("lakeio.filesystem", _fileSystemClient!.Name);
+        activity?.SetTag("lakeio.path", path);
+        activity?.SetTag("lakeio.operation", "json.append_ndjson");
 
-        // Serialize to NDJSON line (BOM-free UTF-8)
-        using var memoryStream = new MemoryStream();
-        await using (var writer = new StreamWriter(memoryStream, new UTF8Encoding(false), leaveOpen: true))
-        {
-            var json = JsonSerializer.Serialize(value, jsonOptions);
-            await writer.WriteLineAsync(json).ConfigureAwait(false);
-            await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
-        }
-
-        memoryStream.Position = 0;
-
-        // Get current file offset (or create the file if it doesn't exist)
-        long offset;
+        var startTimestamp = Stopwatch.GetTimestamp();
         try
         {
-            var properties = await fileClient.GetPropertiesAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-            offset = properties.Value.ContentLength;
-        }
-        catch (RequestFailedException ex) when (ex.ErrorCode is "PathNotFound" or "BlobNotFound")
-        {
-            await fileClient.CreateIfNotExistsAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-            offset = 0;
-        }
+            var jsonOptions = options?.SerializerOptions ?? _options!.JsonSerializerOptions;
+            var fileClient = _fileSystemClient!.GetFileClient(path);
 
-        // Append data at the current offset
-        await fileClient.AppendAsync(memoryStream, offset, cancellationToken: cancellationToken).ConfigureAwait(false);
-
-        // Flush to commit the appended data
-        var flushResponse = await fileClient.FlushAsync(offset + memoryStream.Length, cancellationToken: cancellationToken).ConfigureAwait(false);
-
-        return new Response<StorageResult>(
-            new StorageResult
+            // Serialize to NDJSON line (BOM-free UTF-8)
+            using var memoryStream = new MemoryStream();
+            await using (var writer = new StreamWriter(memoryStream, new UTF8Encoding(false), leaveOpen: true))
             {
-                Path = fileClient.Path,
-                ETag = flushResponse.Value.ETag,
-                LastModified = flushResponse.Value.LastModified,
-                ContentLength = offset + memoryStream.Length
-            },
-            flushResponse.GetRawResponse());
+                var json = JsonSerializer.Serialize(value, jsonOptions);
+                await writer.WriteLineAsync(json).ConfigureAwait(false);
+                await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            memoryStream.Position = 0;
+
+            // Get current file offset (or create the file if it doesn't exist)
+            long offset;
+            try
+            {
+                var properties = await fileClient.GetPropertiesAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                offset = properties.Value.ContentLength;
+            }
+            catch (RequestFailedException ex) when (ex.ErrorCode is "PathNotFound" or "BlobNotFound")
+            {
+                await fileClient.CreateIfNotExistsAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                offset = 0;
+            }
+
+            // Append data at the current offset
+            await fileClient.AppendAsync(memoryStream, offset, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            // Flush to commit the appended data
+            var flushResponse = await fileClient.FlushAsync(offset + memoryStream.Length, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            var result = new Response<StorageResult>(
+                new StorageResult
+                {
+                    Path = fileClient.Path,
+                    ETag = flushResponse.Value.ETag,
+                    LastModified = flushResponse.Value.LastModified,
+                    ContentLength = offset + memoryStream.Length
+                },
+                flushResponse.GetRawResponse());
+
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "json.append_ndjson"));
+            LakeIOMetrics.BytesTransferred.Add(memoryStream.Length,
+                new KeyValuePair<string, object?>("direction", "write"));
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "json.append_ndjson"));
+
+            activity?.SetTag("lakeio.bytes", memoryStream.Length);
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("lakeio.error", true);
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "json.append_ndjson"),
+                new KeyValuePair<string, object?>("error", "true"));
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "json.append_ndjson"),
+                new KeyValuePair<string, object?>("error", "true"));
+            throw;
+        }
     }
 
     /// <summary>
@@ -194,22 +294,57 @@ public class JsonOperations
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
-        var jsonOptions = options?.SerializerOptions ?? _options!.JsonSerializerOptions;
-        var fileClient = _fileSystemClient!.GetFileClient(path);
+        using var activity = LakeIOActivitySource.Source.StartActivity("json.read_ndjson");
+        activity?.SetTag("lakeio.filesystem", _fileSystemClient!.Name);
+        activity?.SetTag("lakeio.path", path);
+        activity?.SetTag("lakeio.operation", "json.read_ndjson");
 
-        await using var stream = await fileClient.OpenReadAsync(
-            new DataLakeOpenReadOptions(allowModifications: false),
-            cancellationToken).ConfigureAwait(false);
-
-        await foreach (var item in JsonSerializer.DeserializeAsyncEnumerable<T>(
-            stream,
-            topLevelValues: true,
-            jsonOptions,
-            cancellationToken).ConfigureAwait(false))
+        var startTimestamp = Stopwatch.GetTimestamp();
+        var success = false;
+        try
         {
-            if (item is not null)
+            var jsonOptions = options?.SerializerOptions ?? _options!.JsonSerializerOptions;
+            var fileClient = _fileSystemClient!.GetFileClient(path);
+
+            await using var stream = await fileClient.OpenReadAsync(
+                new DataLakeOpenReadOptions(allowModifications: false),
+                cancellationToken).ConfigureAwait(false);
+
+            await foreach (var item in JsonSerializer.DeserializeAsyncEnumerable<T>(
+                stream,
+                topLevelValues: true,
+                jsonOptions,
+                cancellationToken).ConfigureAwait(false))
             {
-                yield return item;
+                if (item is not null)
+                {
+                    yield return item;
+                }
+            }
+
+            success = true;
+        }
+        finally
+        {
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            if (success)
+            {
+                LakeIOMetrics.OperationsTotal.Add(1,
+                    new KeyValuePair<string, object?>("operation_type", "json.read_ndjson"));
+                LakeIOMetrics.OperationDuration.Record(elapsed,
+                    new KeyValuePair<string, object?>("operation_type", "json.read_ndjson"));
+                activity?.SetStatus(ActivityStatusCode.Ok);
+            }
+            else
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, "Operation failed");
+                activity?.SetTag("lakeio.error", true);
+                LakeIOMetrics.OperationsTotal.Add(1,
+                    new KeyValuePair<string, object?>("operation_type", "json.read_ndjson"),
+                    new KeyValuePair<string, object?>("error", "true"));
+                LakeIOMetrics.OperationDuration.Record(elapsed,
+                    new KeyValuePair<string, object?>("operation_type", "json.read_ndjson"),
+                    new KeyValuePair<string, object?>("error", "true"));
             }
         }
     }
