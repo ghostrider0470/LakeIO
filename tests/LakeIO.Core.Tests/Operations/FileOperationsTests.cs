@@ -334,4 +334,288 @@ public class FileOperationsTests
 
         await act.Should().ThrowAsync<ArgumentException>();
     }
+
+    // ── DownloadRangeAsync ──────────────────────────────────────────────
+
+    [Fact]
+    public async Task DownloadRangeAsync_ReturnsRequestedByteRange()
+    {
+        var expectedBytes = new byte[] { 10, 20, 30, 40, 50 };
+        var binaryData = new BinaryData(expectedBytes);
+        var contentResponse = MockHelpers.CreateContentResponse(binaryData);
+
+        _mockFileClient.ReadContentAsync(
+                Arg.Any<DataLakeFileReadOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns(contentResponse);
+
+        var result = await _sut.DownloadRangeAsync("data/test.bin", offset: 100, length: 5);
+
+        result.Value.Should().NotBeNull();
+        result.Value.ToArray().Should().BeEquivalentTo(expectedBytes);
+    }
+
+    [Fact]
+    public async Task DownloadRangeAsync_PassesCorrectHttpRange()
+    {
+        var binaryData = new BinaryData(new byte[] { 1, 2, 3 });
+        var contentResponse = MockHelpers.CreateContentResponse(binaryData);
+        DataLakeFileReadOptions? capturedOptions = null;
+
+        _mockFileClient.ReadContentAsync(
+                Arg.Do<DataLakeFileReadOptions>(o => capturedOptions = o),
+                Arg.Any<CancellationToken>())
+            .Returns(contentResponse);
+
+        await _sut.DownloadRangeAsync("data/test.bin", offset: 256, length: 512);
+
+        capturedOptions.Should().NotBeNull();
+        capturedOptions!.Range.Should().Be(new HttpRange(256, 512));
+    }
+
+    [Fact]
+    public async Task DownloadRangeAsync_WithNullPath_ThrowsArgumentException()
+    {
+        var act = () => _sut.DownloadRangeAsync(null!, 0, 10);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task DownloadRangeAsync_WithEmptyPath_ThrowsArgumentException()
+    {
+        var act = () => _sut.DownloadRangeAsync("", 0, 10);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    // ── CopyAsync ───────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task CopyAsync_CopiesFileWithinContainer()
+    {
+        var sourceClient = MockHelpers.CreateMockFileClient("source/file.bin");
+        var destClient = MockHelpers.CreateMockFileClient("dest/file.bin");
+
+        SetupCopyMocks(sourceClient, destClient);
+
+        _mockFsClient.GetFileClient("source/file.bin").Returns(sourceClient);
+        _mockFsClient.GetFileClient("dest/file.bin").Returns(destClient);
+
+        var result = await _sut.CopyAsync("source/file.bin", "dest/file.bin");
+
+        result.Value.Should().NotBeNull();
+        result.Value.Path.Should().Be("dest/file.bin");
+        await destClient.Received(1).UploadAsync(
+            Arg.Any<Stream>(),
+            Arg.Any<DataLakeFileUploadOptions>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CopyAsync_WithOverwriteFalse_SetsIfNoneMatchCondition()
+    {
+        var sourceClient = MockHelpers.CreateMockFileClient("source/file.bin");
+        var destClient = MockHelpers.CreateMockFileClient("dest/file.bin");
+        DataLakeFileUploadOptions? capturedOptions = null;
+
+        var streamResponse = MockHelpers.CreateStreamingResponse(new MemoryStream(new byte[] { 1, 2, 3 }));
+        sourceClient.ReadStreamingAsync(cancellationToken: Arg.Any<CancellationToken>())
+            .Returns(streamResponse);
+
+        var uploadResponse = MockHelpers.CreateUploadResponse();
+        destClient.UploadAsync(
+                Arg.Any<Stream>(),
+                Arg.Do<DataLakeFileUploadOptions>(o => capturedOptions = o),
+                Arg.Any<CancellationToken>())
+            .Returns(uploadResponse);
+
+        _mockFsClient.GetFileClient("source/file.bin").Returns(sourceClient);
+        _mockFsClient.GetFileClient("dest/file.bin").Returns(destClient);
+
+        await _sut.CopyAsync("source/file.bin", "dest/file.bin", overwrite: false);
+
+        capturedOptions.Should().NotBeNull();
+        capturedOptions!.Conditions.Should().NotBeNull();
+        capturedOptions.Conditions!.IfNoneMatch.Should().Be(new ETag("*"));
+    }
+
+    [Fact]
+    public async Task CopyAsync_WithOverwriteTrue_DoesNotSetCondition()
+    {
+        var sourceClient = MockHelpers.CreateMockFileClient("source/file.bin");
+        var destClient = MockHelpers.CreateMockFileClient("dest/file.bin");
+        DataLakeFileUploadOptions? capturedOptions = null;
+
+        var streamResponse = MockHelpers.CreateStreamingResponse(new MemoryStream(new byte[] { 1, 2, 3 }));
+        sourceClient.ReadStreamingAsync(cancellationToken: Arg.Any<CancellationToken>())
+            .Returns(streamResponse);
+
+        var uploadResponse = MockHelpers.CreateUploadResponse();
+        destClient.UploadAsync(
+                Arg.Any<Stream>(),
+                Arg.Do<DataLakeFileUploadOptions>(o => capturedOptions = o),
+                Arg.Any<CancellationToken>())
+            .Returns(uploadResponse);
+
+        _mockFsClient.GetFileClient("source/file.bin").Returns(sourceClient);
+        _mockFsClient.GetFileClient("dest/file.bin").Returns(destClient);
+
+        await _sut.CopyAsync("source/file.bin", "dest/file.bin", overwrite: true);
+
+        capturedOptions.Should().NotBeNull();
+        capturedOptions!.Conditions.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task CopyAsync_WithNullSourcePath_ThrowsArgumentException()
+    {
+        var act = () => _sut.CopyAsync(null!, "dest/file.bin");
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task CopyAsync_WithNullDestinationPath_ThrowsArgumentException()
+    {
+        var act = () => _sut.CopyAsync("source/file.bin", null!);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    // ── CopyToAsync ─────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task CopyToAsync_CopiesToDifferentFileSystem()
+    {
+        var sourceClient = MockHelpers.CreateMockFileClient("source/file.bin");
+        var targetAzureFsClient = MockHelpers.CreateMockFileSystemClient("target-fs");
+        var targetFileClient = MockHelpers.CreateMockFileClient("target/file.bin");
+
+        var streamResponse = MockHelpers.CreateStreamingResponse(new MemoryStream(new byte[] { 1, 2, 3 }));
+        sourceClient.ReadStreamingAsync(cancellationToken: Arg.Any<CancellationToken>())
+            .Returns(streamResponse);
+
+        var uploadResponse = MockHelpers.CreateUploadResponse();
+        targetFileClient.UploadAsync(
+                Arg.Any<Stream>(),
+                Arg.Any<DataLakeFileUploadOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns(uploadResponse);
+
+        _mockFsClient.GetFileClient("source/file.bin").Returns(sourceClient);
+        targetAzureFsClient.GetFileClient("target/file.bin").Returns(targetFileClient);
+
+        var targetFs = new FileSystemClient(targetAzureFsClient, _options);
+
+        var result = await _sut.CopyToAsync("source/file.bin", targetFs, "target/file.bin");
+
+        result.Value.Should().NotBeNull();
+        result.Value.Path.Should().Be("target/file.bin");
+        await targetFileClient.Received(1).UploadAsync(
+            Arg.Any<Stream>(),
+            Arg.Any<DataLakeFileUploadOptions>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CopyToAsync_WithDeleteSource_DeletesSourceAfterCopy()
+    {
+        var sourceClient = MockHelpers.CreateMockFileClient("source/file.bin");
+        var targetAzureFsClient = MockHelpers.CreateMockFileSystemClient("target-fs");
+        var targetFileClient = MockHelpers.CreateMockFileClient("target/file.bin");
+
+        var streamResponse = MockHelpers.CreateStreamingResponse(new MemoryStream(new byte[] { 1, 2, 3 }));
+        sourceClient.ReadStreamingAsync(cancellationToken: Arg.Any<CancellationToken>())
+            .Returns(streamResponse);
+
+        var deleteResponse = MockHelpers.CreateMockRawResponse();
+        sourceClient.DeleteAsync(cancellationToken: Arg.Any<CancellationToken>())
+            .Returns(deleteResponse);
+
+        var uploadResponse = MockHelpers.CreateUploadResponse();
+        targetFileClient.UploadAsync(
+                Arg.Any<Stream>(),
+                Arg.Any<DataLakeFileUploadOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns(uploadResponse);
+
+        _mockFsClient.GetFileClient("source/file.bin").Returns(sourceClient);
+        targetAzureFsClient.GetFileClient("target/file.bin").Returns(targetFileClient);
+
+        var targetFs = new FileSystemClient(targetAzureFsClient, _options);
+
+        await _sut.CopyToAsync("source/file.bin", targetFs, "target/file.bin", deleteSource: true);
+
+        await sourceClient.Received(1).DeleteAsync(
+            Arg.Any<DataLakeRequestConditions>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CopyToAsync_WithDeleteSourceFalse_DoesNotDeleteSource()
+    {
+        var sourceClient = MockHelpers.CreateMockFileClient("source/file.bin");
+        var targetAzureFsClient = MockHelpers.CreateMockFileSystemClient("target-fs");
+        var targetFileClient = MockHelpers.CreateMockFileClient("target/file.bin");
+
+        var streamResponse = MockHelpers.CreateStreamingResponse(new MemoryStream(new byte[] { 1, 2, 3 }));
+        sourceClient.ReadStreamingAsync(cancellationToken: Arg.Any<CancellationToken>())
+            .Returns(streamResponse);
+
+        var uploadResponse = MockHelpers.CreateUploadResponse();
+        targetFileClient.UploadAsync(
+                Arg.Any<Stream>(),
+                Arg.Any<DataLakeFileUploadOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns(uploadResponse);
+
+        _mockFsClient.GetFileClient("source/file.bin").Returns(sourceClient);
+        targetAzureFsClient.GetFileClient("target/file.bin").Returns(targetFileClient);
+
+        var targetFs = new FileSystemClient(targetAzureFsClient, _options);
+
+        await _sut.CopyToAsync("source/file.bin", targetFs, "target/file.bin", deleteSource: false);
+
+        await sourceClient.DidNotReceive().DeleteAsync(
+            Arg.Any<DataLakeRequestConditions>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CopyToAsync_WithNullSourcePath_ThrowsArgumentException()
+    {
+        var targetFs = new FileSystemClient(
+            MockHelpers.CreateMockFileSystemClient("target-fs"), _options);
+
+        var act = () => _sut.CopyToAsync(null!, targetFs, "target/file.bin");
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task CopyToAsync_WithNullTargetFileSystem_ThrowsArgumentNullException()
+    {
+        var act = () => _sut.CopyToAsync("source/file.bin", null!, "target/file.bin");
+
+        await act.Should().ThrowAsync<ArgumentNullException>();
+    }
+
+    // ── Copy Test Helpers ───────────────────────────────────────────────
+
+    private static void SetupCopyMocks(
+        DataLakeFileClient sourceClient,
+        DataLakeFileClient destClient)
+    {
+        var streamResponse = MockHelpers.CreateStreamingResponse(new MemoryStream(new byte[] { 1, 2, 3 }));
+        sourceClient.ReadStreamingAsync(cancellationToken: Arg.Any<CancellationToken>())
+            .Returns(streamResponse);
+
+        var uploadResponse = MockHelpers.CreateUploadResponse();
+        destClient.UploadAsync(
+                Arg.Any<Stream>(),
+                Arg.Any<DataLakeFileUploadOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns(uploadResponse);
+    }
 }
