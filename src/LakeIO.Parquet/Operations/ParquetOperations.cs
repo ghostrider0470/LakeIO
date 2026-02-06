@@ -112,6 +112,18 @@ public class ParquetOperations
                 },
                 response.GetRawResponse());
 
+            // Post-write validation (PARQ-10)
+            if (options?.ValidateAfterWrite == true)
+            {
+                var validation = await ValidateAsync(path, ParquetValidationLevel.Quick, cancellationToken)
+                    .ConfigureAwait(false);
+                if (!validation.IsValid)
+                {
+                    throw new InvalidOperationException(
+                        $"Post-write validation failed for '{path}': {validation.ErrorReason}");
+                }
+            }
+
             var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
             LakeIOMetrics.OperationsTotal.Add(1,
                 new KeyValuePair<string, object?>("operation_type", "parquet.write"));
@@ -214,6 +226,18 @@ public class ParquetOperations
                     ContentLength = memoryStream.Length
                 },
                 response.GetRawResponse());
+
+            // Post-write validation (PARQ-10)
+            if (options?.ValidateAfterWrite == true)
+            {
+                var validation = await ValidateAsync(path, ParquetValidationLevel.Quick, cancellationToken)
+                    .ConfigureAwait(false);
+                if (!validation.IsValid)
+                {
+                    throw new InvalidOperationException(
+                        $"Post-write validation failed for '{path}': {validation.ErrorReason}");
+                }
+            }
 
             var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
             LakeIOMetrics.OperationsTotal.Add(1,
