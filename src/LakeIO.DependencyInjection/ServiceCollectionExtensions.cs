@@ -37,6 +37,25 @@ namespace LakeIO;
 /// services.AddLakeIO(configuration.GetSection("LakeIO"));
 /// </code>
 /// </para>
+/// <para>
+/// Named client example (multiple storage accounts):
+/// <code>
+/// services.AddLakeIO("hot", hotConnectionString);
+/// services.AddLakeIO("cold", coldConnectionString);
+/// // Resolve: factory.CreateClient("hot") or [FromKeyedServices("hot")]
+/// </code>
+/// </para>
+/// <para>
+/// Builder example (shared defaults + named clients):
+/// <code>
+/// services.AddLakeIO(builder =>
+/// {
+///     builder.ConfigureDefaults(opts => opts.EnableDiagnostics = true);
+///     builder.AddClient(defaultConnectionString);
+///     builder.AddClient("archive", archiveConnectionString);
+/// });
+/// </code>
+/// </para>
 /// </remarks>
 public static class ServiceCollectionExtensions
 {
@@ -180,5 +199,199 @@ public static class ServiceCollectionExtensions
         configureOptions(options);
         services.TryAddSingleton(new LakeClient(serviceUri, credential, options));
         return services;
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Named client overloads (Phase 13)
+    // ──────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Registers a named <see cref="LakeClient"/> singleton using a connection string
+    /// with default <see cref="LakeClientOptions"/>.
+    /// </summary>
+    /// <param name="services">The service collection.</param>
+    /// <param name="name">
+    /// A unique name for this client. Resolve via
+    /// <see cref="ILakeClientFactory.CreateClient"/> or <c>[FromKeyedServices(name)]</c>.
+    /// </param>
+    /// <param name="connectionString">
+    /// The Azure Storage connection string for the Data Lake account.
+    /// </param>
+    /// <returns>The <paramref name="services"/> instance for chaining.</returns>
+    public static IServiceCollection AddLakeIO(
+        this IServiceCollection services,
+        string name,
+        string connectionString)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
+
+        services.AddKeyedSingleton<LakeClient>(
+            name,
+            (sp, key) => new LakeClient(connectionString));
+
+        EnsureFactoryRegistered(services);
+        return services;
+    }
+
+    /// <summary>
+    /// Registers a named <see cref="LakeClient"/> singleton using a connection string
+    /// with custom <see cref="LakeClientOptions"/>.
+    /// </summary>
+    /// <param name="services">The service collection.</param>
+    /// <param name="name">
+    /// A unique name for this client. Resolve via
+    /// <see cref="ILakeClientFactory.CreateClient"/> or <c>[FromKeyedServices(name)]</c>.
+    /// </param>
+    /// <param name="connectionString">
+    /// The Azure Storage connection string for the Data Lake account.
+    /// </param>
+    /// <param name="configureOptions">
+    /// A delegate to configure <see cref="LakeClientOptions"/>.
+    /// </param>
+    /// <returns>The <paramref name="services"/> instance for chaining.</returns>
+    public static IServiceCollection AddLakeIO(
+        this IServiceCollection services,
+        string name,
+        string connectionString,
+        Action<LakeClientOptions> configureOptions)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
+        ArgumentNullException.ThrowIfNull(configureOptions);
+
+        var options = new LakeClientOptions();
+        configureOptions(options);
+        services.AddKeyedSingleton<LakeClient>(
+            name,
+            (sp, key) => new LakeClient(connectionString, options));
+
+        EnsureFactoryRegistered(services);
+        return services;
+    }
+
+    /// <summary>
+    /// Registers a named <see cref="LakeClient"/> singleton using a service URI and
+    /// <see cref="TokenCredential"/> with default <see cref="LakeClientOptions"/>.
+    /// </summary>
+    /// <param name="services">The service collection.</param>
+    /// <param name="name">
+    /// A unique name for this client. Resolve via
+    /// <see cref="ILakeClientFactory.CreateClient"/> or <c>[FromKeyedServices(name)]</c>.
+    /// </param>
+    /// <param name="serviceUri">
+    /// The Data Lake service URI (e.g., <c>https://accountname.dfs.core.windows.net</c>).
+    /// </param>
+    /// <param name="credential">The token credential for authentication.</param>
+    /// <returns>The <paramref name="services"/> instance for chaining.</returns>
+    public static IServiceCollection AddLakeIO(
+        this IServiceCollection services,
+        string name,
+        Uri serviceUri,
+        TokenCredential credential)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(serviceUri);
+        ArgumentNullException.ThrowIfNull(credential);
+
+        services.AddKeyedSingleton<LakeClient>(
+            name,
+            (sp, key) => new LakeClient(serviceUri, credential));
+
+        EnsureFactoryRegistered(services);
+        return services;
+    }
+
+    /// <summary>
+    /// Registers a named <see cref="LakeClient"/> singleton using a service URI and
+    /// <see cref="TokenCredential"/> with custom <see cref="LakeClientOptions"/>.
+    /// </summary>
+    /// <param name="services">The service collection.</param>
+    /// <param name="name">
+    /// A unique name for this client. Resolve via
+    /// <see cref="ILakeClientFactory.CreateClient"/> or <c>[FromKeyedServices(name)]</c>.
+    /// </param>
+    /// <param name="serviceUri">
+    /// The Data Lake service URI (e.g., <c>https://accountname.dfs.core.windows.net</c>).
+    /// </param>
+    /// <param name="credential">The token credential for authentication.</param>
+    /// <param name="configureOptions">
+    /// A delegate to configure <see cref="LakeClientOptions"/>.
+    /// </param>
+    /// <returns>The <paramref name="services"/> instance for chaining.</returns>
+    public static IServiceCollection AddLakeIO(
+        this IServiceCollection services,
+        string name,
+        Uri serviceUri,
+        TokenCredential credential,
+        Action<LakeClientOptions> configureOptions)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(serviceUri);
+        ArgumentNullException.ThrowIfNull(credential);
+        ArgumentNullException.ThrowIfNull(configureOptions);
+
+        var options = new LakeClientOptions();
+        configureOptions(options);
+        services.AddKeyedSingleton<LakeClient>(
+            name,
+            (sp, key) => new LakeClient(serviceUri, credential, options));
+
+        EnsureFactoryRegistered(services);
+        return services;
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Builder overload (Phase 13)
+    // ──────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Registers one or more <see cref="LakeClient"/> instances using a fluent
+    /// <see cref="LakeIOBuilder"/> that supports shared defaults and named clients.
+    /// </summary>
+    /// <param name="services">The service collection.</param>
+    /// <param name="configure">
+    /// A delegate that configures the <see cref="LakeIOBuilder"/>. Use
+    /// <see cref="LakeIOBuilder.ConfigureDefaults"/> for shared options and
+    /// <see cref="LakeIOBuilder.AddClient(string, string, Action{LakeClientOptions}?)"/>
+    /// for named clients.
+    /// </param>
+    /// <returns>The <paramref name="services"/> instance for chaining.</returns>
+    /// <example>
+    /// <code>
+    /// services.AddLakeIO(builder =>
+    /// {
+    ///     builder.ConfigureDefaults(opts => opts.EnableDiagnostics = true);
+    ///     builder.AddClient(defaultConnectionString);
+    ///     builder.AddClient("archive", archiveConnectionString);
+    /// });
+    /// </code>
+    /// </example>
+    public static IServiceCollection AddLakeIO(
+        this IServiceCollection services,
+        Action<LakeIOBuilder> configure)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configure);
+
+        var builder = new LakeIOBuilder(services);
+        configure(builder);
+
+        EnsureFactoryRegistered(services);
+        return services;
+    }
+
+    /// <summary>
+    /// Ensures the <see cref="ILakeClientFactory"/> singleton is registered.
+    /// Uses <see cref="ServiceCollectionDescriptorExtensions.TryAddSingleton{TService, TImplementation}(IServiceCollection)"/>
+    /// for idempotent registration.
+    /// </summary>
+    private static void EnsureFactoryRegistered(IServiceCollection services)
+    {
+        services.TryAddSingleton<ILakeClientFactory, LakeClientFactory>();
     }
 }
