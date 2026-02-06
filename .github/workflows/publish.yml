@@ -1,21 +1,16 @@
-name: Publish to NuGet
+name: Publish NuGet Packages
 
 on:
   push:
     branches: [master, main]
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
-    tags:
-      - 'v*.*.*'
 
 permissions:
-  contents: write
+  contents: read
+  packages: write
 
 env:
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
   DOTNET_NOLOGO: true
-  NUGET_AUTH_TOKEN: ${{ secrets.NUGET_API_KEY }}
 
 jobs:
   publish:
@@ -28,25 +23,14 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '9.0.x'
+          dotnet-version: '10.0.x'
 
-      - name: Extract version from csproj
+      - name: Extract version from Directory.Build.props
         id: version
         run: |
-          CSPROJ_VERSION=$(grep -Po '(?<=<Version>)[^<]+' src/LakeIO/LakeIO.csproj)
-          echo "VERSION=$CSPROJ_VERSION" >> $GITHUB_OUTPUT
-          echo "Detected version: $CSPROJ_VERSION"
-
-      - name: Verify tag matches csproj (tag builds only)
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          TAG_VERSION=${GITHUB_REF#refs/tags/v}
-          CSPROJ_VERSION=${{ steps.version.outputs.VERSION }}
-          if [ "$CSPROJ_VERSION" != "$TAG_VERSION" ]; then
-            echo "Error: Tag version ($TAG_VERSION) does not match csproj version ($CSPROJ_VERSION)"
-            exit 1
-          fi
-          echo "Tag version verified: $TAG_VERSION"
+          VERSION=$(grep -Po '(?<=<Version>)[^<]+' Directory.Build.props)
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "Package version: $VERSION"
 
       - name: Restore dependencies
         run: dotnet restore LakeIO.sln
@@ -54,17 +38,17 @@ jobs:
       - name: Build
         run: dotnet build LakeIO.sln --configuration Release --no-restore
 
-      - name: Pack
-        run: dotnet pack src/LakeIO/LakeIO.csproj --configuration Release --no-build --output ./artifacts
+      - name: Test
+        run: |
+          dotnet test tests/LakeIO.Core.Tests/LakeIO.Core.Tests.csproj --configuration Release --no-build
+          dotnet test tests/LakeIO.Parquet.Tests/LakeIO.Parquet.Tests.csproj --configuration Release --no-build
+          dotnet test tests/LakeIO.Integration.Tests/LakeIO.Integration.Tests.csproj --configuration Release --no-build
 
-      - name: Publish to NuGet
+      - name: Pack
+        run: dotnet pack LakeIO.sln --configuration Release --no-build --output ./artifacts
+
+      - name: Publish to nuget.org
         run: dotnet nuget push ./artifacts/*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
 
-      - name: Create GitHub Release (tag builds only)
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v1
-        with:
-          files: ./artifacts/*.nupkg
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish to GitHub Packages
+        run: dotnet nuget push ./artifacts/*.nupkg --api-key ${{ secrets.GITHUB_TOKEN }} --source https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json --skip-duplicate

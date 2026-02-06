@@ -1,49 +1,19 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
     <PackageId>LakeIO.Parquet</PackageId>
-    <Version>2.0.0</Version>
-    <Authors>Hamza Abdagic</Authors>
-    <Company>LakeIO</Company>
     <RootNamespace>LakeIO.Parquet</RootNamespace>
     <AssemblyName>LakeIO.Parquet</AssemblyName>
     <Description>Parquet support for LakeIO with streaming read/write, schema evolution, and AOT-friendly serialization.</Description>
-    <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageProjectUrl>https://github.com/ghostrider0470/LakeIO</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/ghostrider0470/LakeIO</RepositoryUrl>
-    <RepositoryType>git</RepositoryType>
     <PackageTags>azure;datalake;parquet;storage;streaming;schema-evolution;lakeio</PackageTags>
-    <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
-  </PropertyGroup>
-
-  <PropertyGroup>
-    <Nullable>enable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <AnalysisLevel>latest</AnalysisLevel>
-    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
-    <NoWarn>$(NoWarn);CA1416</NoWarn>
-    <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    <DocumentationFile>$(OutputPath)$(AssemblyName).xml</DocumentationFile>
-    <IncludeSymbols>true</IncludeSymbols>
-    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
-    <PublishRepositoryUrl>true</PublishRepositoryUrl>
-    <EmbedUntrackedSources>true</EmbedUntrackedSources>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Parquet.Net" Version="5.5.0" />
-    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\LakeIO.Core\LakeIO.Core.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
-    <None Include="..\..\LICENSE" Pack="true" PackagePath="\" />
   </ItemGroup>
 
   <ItemGroup>
