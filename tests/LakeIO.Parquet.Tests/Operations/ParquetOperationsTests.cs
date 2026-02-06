@@ -268,6 +268,405 @@ public class ParquetOperationsTests
         await act.Should().ThrowAsync<ArgumentException>();
     }
 
+    // ===== ValidateAsync Tests — Quick Level =====
+
+    [Fact]
+    public async Task ValidateAsync_QuickLevel_ValidFile_ReturnsValid()
+    {
+        // Arrange
+        var properties = CreateMockPathProperties(contentLength: 1024);
+        var propertiesResponse = Azure.Response.FromValue(properties, Substitute.For<Azure.Response>());
+        _mockFileClient.GetPropertiesAsync(
+                conditions: Arg.Any<DataLakeRequestConditions>(),
+                cancellationToken: Arg.Any<CancellationToken>())
+            .Returns(propertiesResponse);
+
+        // Act
+        var result = await _sut.ValidateAsync("data/sensors.parquet", ParquetValidationLevel.Quick);
+
+        // Assert
+        result.IsValid.Should().BeTrue();
+        result.Level.Should().Be(ParquetValidationLevel.Quick);
+        result.FileSize.Should().Be(1024);
+        result.RowGroupCount.Should().BeNull();
+        result.FieldNames.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ValidateAsync_QuickLevel_FileTooSmall_ReturnsInvalid()
+    {
+        // Arrange
+        var properties = CreateMockPathProperties(contentLength: 8);
+        var propertiesResponse = Azure.Response.FromValue(properties, Substitute.For<Azure.Response>());
+        _mockFileClient.GetPropertiesAsync(
+                conditions: Arg.Any<DataLakeRequestConditions>(),
+                cancellationToken: Arg.Any<CancellationToken>())
+            .Returns(propertiesResponse);
+
+        // Act
+        var result = await _sut.ValidateAsync("data/sensors.parquet", ParquetValidationLevel.Quick);
+
+        // Assert
+        result.IsValid.Should().BeFalse();
+        result.ErrorReason.Should().Contain("less than 12 bytes");
+        result.FileSize.Should().Be(8);
+        result.Level.Should().Be(ParquetValidationLevel.Quick);
+    }
+
+    [Fact]
+    public async Task ValidateAsync_QuickLevel_ExactMinimumSize_ReturnsValid()
+    {
+        // Arrange
+        var properties = CreateMockPathProperties(contentLength: 12);
+        var propertiesResponse = Azure.Response.FromValue(properties, Substitute.For<Azure.Response>());
+        _mockFileClient.GetPropertiesAsync(
+                conditions: Arg.Any<DataLakeRequestConditions>(),
+                cancellationToken: Arg.Any<CancellationToken>())
+            .Returns(propertiesResponse);
+
+        // Act
+        var result = await _sut.ValidateAsync("data/sensors.parquet", ParquetValidationLevel.Quick);
+
+        // Assert
+        result.IsValid.Should().BeTrue();
+        result.Level.Should().Be(ParquetValidationLevel.Quick);
+        result.FileSize.Should().Be(12);
+    }
+
+    // ===== ValidateAsync Tests — Standard Level =====
+
+    [Fact]
+    public async Task ValidateAsync_StandardLevel_ValidParquetMagic_ReturnsValid()
+    {
+        // Arrange
+        var properties = CreateMockPathProperties(contentLength: 100);
+        var propertiesResponse = Azure.Response.FromValue(properties, Substitute.For<Azure.Response>());
+        _mockFileClient.GetPropertiesAsync(
+                conditions: Arg.Any<DataLakeRequestConditions>(),
+                cancellationToken: Arg.Any<CancellationToken>())
+            .Returns(propertiesResponse);
+
+        // PAR1 magic bytes
+        var par1Bytes = new byte[] { 0x50, 0x41, 0x52, 0x31 };
+        var par1Content = BinaryData.FromBytes(par1Bytes);
+        var contentResponse = CreateMockContentResponse(par1Content);
+
+        // Both header and footer reads return valid PAR1 bytes
+        _mockFileClient.ReadContentAsync(
+                Arg.Any<DataLakeFileReadOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns(contentResponse);
+
+        // Act
+        var result = await _sut.ValidateAsync("data/sensors.parquet", ParquetValidationLevel.Standard);
+
+        // Assert
+        result.IsValid.Should().BeTrue();
+        result.Level.Should().Be(ParquetValidationLevel.Standard);
+    }
+
+    [Fact]
+    public async Task ValidateAsync_StandardLevel_InvalidHeader_ReturnsInvalid()
+    {
+        // Arrange
+        var properties = CreateMockPathProperties(contentLength: 100);
+        var propertiesResponse = Azure.Response.FromValue(properties, Substitute.For<Azure.Response>());
+        _mockFileClient.GetPropertiesAsync(
+                conditions: Arg.Any<DataLakeRequestConditions>(),
+                cancellationToken: Arg.Any<CancellationToken>())
+            .Returns(propertiesResponse);
+
+        // Invalid header bytes (not PAR1)
+        var invalidBytes = new byte[] { 0x00, 0x00, 0x00, 0x00 };
+        var invalidContent = BinaryData.FromBytes(invalidBytes);
+        var contentResponse = CreateMockContentResponse(invalidContent);
+
+        _mockFileClient.ReadContentAsync(
+                Arg.Any<DataLakeFileReadOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns(contentResponse);
+
+        // Act
+        var result = await _sut.ValidateAsync("data/sensors.parquet", ParquetValidationLevel.Standard);
+
+        // Assert
+        result.IsValid.Should().BeFalse();
+        result.ErrorReason.Should().Contain("header magic");
+    }
+
+    [Fact]
+    public async Task ValidateAsync_StandardLevel_InvalidFooter_ReturnsInvalid()
+    {
+        // Arrange
+        var properties = CreateMockPathProperties(contentLength: 100);
+        var propertiesResponse = Azure.Response.FromValue(properties, Substitute.For<Azure.Response>());
+        _mockFileClient.GetPropertiesAsync(
+                conditions: Arg.Any<DataLakeRequestConditions>(),
+                cancellationToken: Arg.Any<CancellationToken>())
+            .Returns(propertiesResponse);
+
+        // Header: valid PAR1, Footer: invalid
+        var par1Bytes = new byte[] { 0x50, 0x41, 0x52, 0x31 };
+        var invalidBytes = new byte[] { 0x00, 0x00, 0x00, 0x00 };
+
+        // Pre-compute return values to avoid NS4000
+        var headerResponse = CreateMockContentResponse(BinaryData.FromBytes(par1Bytes));
+        var footerResponse = CreateMockContentResponse(BinaryData.FromBytes(invalidBytes));
+
+        var callCount = 0;
+        _mockFileClient.ReadContentAsync(
+                Arg.Any<DataLakeFileReadOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                var call = Interlocked.Increment(ref callCount);
+                return call == 1 ? headerResponse : footerResponse;
+            });
+
+        // Act
+        var result = await _sut.ValidateAsync("data/sensors.parquet", ParquetValidationLevel.Standard);
+
+        // Assert
+        result.IsValid.Should().BeFalse();
+        result.ErrorReason.Should().Contain("footer magic");
+    }
+
+    // ===== ValidateAsync Tests — Deep Level =====
+
+    [Fact]
+    public async Task ValidateAsync_DeepLevel_ValidParquet_ReturnsMetadata()
+    {
+        // Arrange
+        var properties = CreateMockPathProperties(contentLength: 1024);
+        var propertiesResponse = Azure.Response.FromValue(properties, Substitute.For<Azure.Response>());
+        _mockFileClient.GetPropertiesAsync(
+                conditions: Arg.Any<DataLakeRequestConditions>(),
+                cancellationToken: Arg.Any<CancellationToken>())
+            .Returns(propertiesResponse);
+
+        // Valid PAR1 magic for header and footer
+        var par1Bytes = new byte[] { 0x50, 0x41, 0x52, 0x31 };
+        var contentResponse = CreateMockContentResponse(BinaryData.FromBytes(par1Bytes));
+        _mockFileClient.ReadContentAsync(
+                Arg.Any<DataLakeFileReadOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns(contentResponse);
+
+        // Create real in-memory Parquet stream for Deep level OpenReadAsync
+        var parquetStream = await CreateInMemoryParquetStream();
+        _mockFileClient.OpenReadAsync(
+                Arg.Any<DataLakeOpenReadOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns(parquetStream);
+
+        // Act
+        var result = await _sut.ValidateAsync("data/sensors.parquet", ParquetValidationLevel.Deep);
+
+        // Assert
+        result.IsValid.Should().BeTrue();
+        result.Level.Should().Be(ParquetValidationLevel.Deep);
+        result.RowGroupCount.Should().BeGreaterThanOrEqualTo(1);
+        result.FieldNames.Should().NotBeNull();
+        result.FieldNames.Should().Contain("Id");
+        result.FieldNames.Should().Contain("SensorId");
+        result.FieldNames.Should().Contain("Value");
+        result.FieldNames.Should().Contain("Timestamp");
+    }
+
+    // ===== ValidateAsync Tests — Error Handling =====
+
+    [Fact]
+    public async Task ValidateAsync_FileNotFound_ReturnsInvalid()
+    {
+        // Arrange: GetPropertiesAsync throws 404
+        _mockFileClient.GetPropertiesAsync(
+                conditions: Arg.Any<DataLakeRequestConditions>(),
+                cancellationToken: Arg.Any<CancellationToken>())
+            .Returns<Azure.Response<PathProperties>>(_ =>
+                throw new RequestFailedException(404, "PathNotFound"));
+
+        // Act
+        var result = await _sut.ValidateAsync("data/missing.parquet", ParquetValidationLevel.Quick);
+
+        // Assert
+        result.IsValid.Should().BeFalse();
+        result.ErrorReason.Should().Contain("PathNotFound");
+    }
+
+    [Fact]
+    public async Task ValidateAsync_NullPath_ThrowsArgumentException()
+    {
+        // Act
+        var act = () => _sut.ValidateAsync(null!);
+
+        // Assert
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task ValidateAsync_EmptyPath_ThrowsArgumentException()
+    {
+        // Act
+        var act = () => _sut.ValidateAsync("");
+
+        // Assert
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    // ===== Post-Write Validation Tests =====
+
+    [Fact]
+    public async Task WriteAsync_ValidateAfterWriteTrue_CallsValidation()
+    {
+        // Arrange: successful upload
+        var uploadResponse = CreateUploadResponse();
+        _mockFileClient.UploadAsync(
+                Arg.Any<Stream>(),
+                Arg.Any<DataLakeFileUploadOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns(uploadResponse);
+
+        // Quick validation passes (file >= 12 bytes)
+        var properties = CreateMockPathProperties(contentLength: 512);
+        var propertiesResponse = Azure.Response.FromValue(properties, Substitute.For<Azure.Response>());
+        _mockFileClient.GetPropertiesAsync(
+                conditions: Arg.Any<DataLakeRequestConditions>(),
+                cancellationToken: Arg.Any<CancellationToken>())
+            .Returns(propertiesResponse);
+
+        var items = new List<TestSensorData>
+        {
+            new() { Id = 1, SensorId = "S1", Value = 42.5, Timestamp = DateTime.UtcNow }
+        };
+
+        // Act
+        var result = await _sut.WriteAsync("data/sensors.parquet", items,
+            new ParquetOptions { ValidateAfterWrite = true });
+
+        // Assert: no exception, result is valid
+        result.Should().NotBeNull();
+        result.Value.Path.Should().Be("test-path");
+    }
+
+    [Fact]
+    public async Task WriteAsync_ValidateAfterWriteTrue_ValidationFails_ThrowsInvalidOperationException()
+    {
+        // Arrange: successful upload
+        var uploadResponse = CreateUploadResponse();
+        _mockFileClient.UploadAsync(
+                Arg.Any<Stream>(),
+                Arg.Any<DataLakeFileUploadOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns(uploadResponse);
+
+        // Quick validation fails (file too small)
+        var properties = CreateMockPathProperties(contentLength: 5);
+        var propertiesResponse = Azure.Response.FromValue(properties, Substitute.For<Azure.Response>());
+        _mockFileClient.GetPropertiesAsync(
+                conditions: Arg.Any<DataLakeRequestConditions>(),
+                cancellationToken: Arg.Any<CancellationToken>())
+            .Returns(propertiesResponse);
+
+        var items = new List<TestSensorData>
+        {
+            new() { Id = 1, SensorId = "S1", Value = 42.5, Timestamp = DateTime.UtcNow }
+        };
+
+        // Act
+        var act = () => _sut.WriteAsync("data/sensors.parquet", items,
+            new ParquetOptions { ValidateAfterWrite = true });
+
+        // Assert
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*Post-write validation failed*");
+    }
+
+    [Fact]
+    public async Task WriteAsync_ValidateAfterWriteNull_SkipsValidation()
+    {
+        // Arrange: successful upload
+        var uploadResponse = CreateUploadResponse();
+        _mockFileClient.UploadAsync(
+                Arg.Any<Stream>(),
+                Arg.Any<DataLakeFileUploadOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns(uploadResponse);
+
+        var items = new List<TestSensorData>
+        {
+            new() { Id = 1, SensorId = "S1", Value = 42.5, Timestamp = DateTime.UtcNow }
+        };
+
+        // Act: no options (ValidateAfterWrite is null)
+        var result = await _sut.WriteAsync("data/sensors.parquet", items);
+
+        // Assert: no GetPropertiesAsync call (validation skipped)
+        result.Should().NotBeNull();
+        await _mockFileClient.DidNotReceive().GetPropertiesAsync(
+            conditions: Arg.Any<DataLakeRequestConditions>(),
+            cancellationToken: Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task WriteAsync_ValidateAfterWriteFalse_SkipsValidation()
+    {
+        // Arrange: successful upload
+        var uploadResponse = CreateUploadResponse();
+        _mockFileClient.UploadAsync(
+                Arg.Any<Stream>(),
+                Arg.Any<DataLakeFileUploadOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns(uploadResponse);
+
+        var items = new List<TestSensorData>
+        {
+            new() { Id = 1, SensorId = "S1", Value = 42.5, Timestamp = DateTime.UtcNow }
+        };
+
+        // Act: ValidateAfterWrite = false
+        var result = await _sut.WriteAsync("data/sensors.parquet", items,
+            new ParquetOptions { ValidateAfterWrite = false });
+
+        // Assert: no GetPropertiesAsync call (validation skipped)
+        result.Should().NotBeNull();
+        await _mockFileClient.DidNotReceive().GetPropertiesAsync(
+            conditions: Arg.Any<DataLakeRequestConditions>(),
+            cancellationToken: Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task WriteStreamAsync_ValidateAfterWriteTrue_CallsValidation()
+    {
+        // Arrange: successful upload
+        var uploadResponse = CreateUploadResponse();
+        _mockFileClient.UploadAsync(
+                Arg.Any<Stream>(),
+                Arg.Any<DataLakeFileUploadOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns(uploadResponse);
+
+        // Quick validation passes (file >= 12 bytes)
+        var properties = CreateMockPathProperties(contentLength: 512);
+        var propertiesResponse = Azure.Response.FromValue(properties, Substitute.For<Azure.Response>());
+        _mockFileClient.GetPropertiesAsync(
+                conditions: Arg.Any<DataLakeRequestConditions>(),
+                cancellationToken: Arg.Any<CancellationToken>())
+            .Returns(propertiesResponse);
+
+        var items = ToAsyncEnumerable(new List<TestSensorData>
+        {
+            new() { Id = 1, SensorId = "S1", Value = 42.5, Timestamp = DateTime.UtcNow }
+        });
+
+        // Act
+        var result = await _sut.WriteStreamAsync("data/sensors.parquet", items,
+            new ParquetOptions { ValidateAfterWrite = true });
+
+        // Assert: no exception, result is valid
+        result.Should().NotBeNull();
+        result.Value.Path.Should().Be("test-path");
+    }
+
     // ===== Helper Methods =====
 
     /// <summary>
@@ -312,6 +711,74 @@ public class ParquetOperationsTests
             yield return item;
         }
         await Task.CompletedTask; // Satisfy async requirement
+    }
+
+    /// <summary>
+    /// Creates a mock <see cref="PathProperties"/> via the DataLake model factory with the specified content length.
+    /// </summary>
+    private static PathProperties CreateMockPathProperties(long contentLength = 1024)
+    {
+        return DataLakeModelFactory.PathProperties(
+            lastModified: DateTimeOffset.UtcNow,
+            creationTime: DateTimeOffset.UtcNow.AddDays(-1),
+            metadata: new Dictionary<string, string>(),
+            copyCompletionTime: default,
+            copyStatusDescription: null,
+            copyId: null,
+            copyProgress: null,
+            copySource: null,
+            copyStatus: CopyStatus.Success,
+            isIncrementalCopy: false,
+            leaseDuration: DataLakeLeaseDuration.Infinite,
+            leaseState: DataLakeLeaseState.Available,
+            leaseStatus: DataLakeLeaseStatus.Unlocked,
+            contentLength: contentLength,
+            contentType: "application/octet-stream",
+            eTag: new ETag("\"test-etag\""),
+            contentHash: null,
+            contentEncoding: null,
+            contentDisposition: null,
+            contentLanguage: null,
+            cacheControl: null,
+            acceptRanges: null,
+            isServerEncrypted: false,
+            encryptionKeySha256: null,
+            accessTier: null,
+            archiveStatus: null,
+            accessTierChangeTime: default,
+            isDirectory: false);
+    }
+
+    /// <summary>
+    /// Creates a mock <see cref="Azure.Response{T}"/> of <see cref="DataLakeFileReadResult"/>
+    /// for ReadContentAsync return values.
+    /// </summary>
+    private static Azure.Response<DataLakeFileReadResult> CreateMockContentResponse(BinaryData content)
+    {
+        var details = DataLakeModelFactory.FileDownloadDetails(
+            lastModified: DateTimeOffset.UtcNow,
+            metadata: new Dictionary<string, string>(),
+            contentRange: null,
+            eTag: new ETag("\"test-etag\""),
+            contentEncoding: null,
+            cacheControl: null,
+            contentDisposition: null,
+            contentLanguage: null,
+            copyCompletionTime: default,
+            copyStatusDescription: null,
+            copyId: null,
+            copyProgress: null,
+            copySource: null,
+            copyStatus: CopyStatus.Success,
+            leaseDuration: DataLakeLeaseDuration.Infinite,
+            leaseState: DataLakeLeaseState.Available,
+            leaseStatus: DataLakeLeaseStatus.Unlocked,
+            acceptRanges: null,
+            isServerEncrypted: false,
+            encryptionKeySha256: null,
+            contentHash: null);
+        var readResult = DataLakeModelFactory.DataLakeFileReadResult(content, details);
+        return Azure.Response.FromValue(readResult, Substitute.For<Azure.Response>());
     }
 
     /// <summary>
