@@ -1,0 +1,88 @@
+<Project>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       Shared properties for ALL projects (src + tests)
+       ═══════════════════════════════════════════════════════════════ -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       Detect whether this is a test project by directory path.
+       This runs in props (before csproj) so it's available early.
+       ═══════════════════════════════════════════════════════════════ -->
+  <PropertyGroup>
+    <_IsTestProject>false</_IsTestProject>
+    <_IsTestProject Condition="$(MSBuildProjectDirectory.Contains('tests'))">true</_IsTestProject>
+  </PropertyGroup>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       Src projects: version, metadata, build settings, packaging
+       ═══════════════════════════════════════════════════════════════ -->
+  <PropertyGroup Condition="'$(_IsTestProject)' == 'false'">
+    <!-- ── Version: bump here before merging to master ── -->
+    <Version>2.1.0</Version>
+
+    <!-- ── Package metadata ── -->
+    <Authors>Hamza Abdagic</Authors>
+    <Company>LakeIO</Company>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/ghostrider0470/LakeIO</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/ghostrider0470/LakeIO</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+
+    <!-- ── Build settings ── -->
+    <AnalysisLevel>latest</AnalysisLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <DocumentationFile>$(OutputPath)$(AssemblyName).xml</DocumentationFile>
+
+    <!-- ── Symbols & SourceLink ── -->
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+  </PropertyGroup>
+
+  <!-- SourceLink package (src projects only) -->
+  <ItemGroup Condition="'$(_IsTestProject)' == 'false'">
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All" />
+  </ItemGroup>
+
+  <!-- README + LICENSE packed into every NuGet package (src projects only) -->
+  <ItemGroup Condition="'$(_IsTestProject)' == 'false'">
+    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" />
+    <None Include="$(MSBuildThisFileDirectory)LICENSE" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       Test projects: test infrastructure and shared packages
+       ═══════════════════════════════════════════════════════════════ -->
+  <PropertyGroup Condition="'$(_IsTestProject)' == 'true'">
+    <IsPackable>false</IsPackable>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+  </PropertyGroup>
+
+  <!-- Shared test package references -->
+  <ItemGroup Condition="'$(_IsTestProject)' == 'true'">
+    <PackageReference Include="xunit.v3" Version="3.2.2" />
+    <PackageReference Include="NSubstitute" Version="5.3.0" />
+    <PackageReference Include="NSubstitute.Analyzers.CSharp" Version="1.0.17">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="FluentAssertions" Version="7.0.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="coverlet.collector" Version="6.0.4">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+</Project>
