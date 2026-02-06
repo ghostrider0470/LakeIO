@@ -75,4 +75,106 @@ public static class MockHelpers
     {
         mockFs.GetFileClient(Arg.Any<string>()).Returns(mockFile);
     }
+
+    /// <summary>
+    /// Creates a <see cref="FileDownloadDetails"/> via the DataLake model factory with sensible defaults.
+    /// Required for constructing streaming/content results since the class has no public constructor.
+    /// </summary>
+    public static FileDownloadDetails CreateFileDownloadDetails()
+    {
+        return DataLakeModelFactory.FileDownloadDetails(
+            lastModified: DateTimeOffset.UtcNow,
+            metadata: new Dictionary<string, string>(),
+            contentRange: null,
+            eTag: new ETag("\"test-etag\""),
+            contentEncoding: null,
+            cacheControl: null,
+            contentDisposition: null,
+            contentLanguage: null,
+            copyCompletionTime: default,
+            copyStatusDescription: null,
+            copyId: null,
+            copyProgress: null,
+            copySource: null,
+            copyStatus: CopyStatus.Success,
+            leaseDuration: DataLakeLeaseDuration.Infinite,
+            leaseState: DataLakeLeaseState.Available,
+            leaseStatus: DataLakeLeaseStatus.Unlocked,
+            acceptRanges: null,
+            isServerEncrypted: false,
+            encryptionKeySha256: null,
+            contentHash: null);
+    }
+
+    /// <summary>
+    /// Creates a <see cref="DataLakeFileReadStreamingResult"/> via the DataLake model factory.
+    /// Use for mocking ReadStreamingAsync return values.
+    /// </summary>
+    public static DataLakeFileReadStreamingResult CreateStreamingResult(Stream content)
+    {
+        var details = CreateFileDownloadDetails();
+        return DataLakeModelFactory.DataLakeFileReadStreamingResult(content, details);
+    }
+
+    /// <summary>
+    /// Creates a full <see cref="Azure.Response{T}"/> of <see cref="DataLakeFileReadStreamingResult"/>
+    /// suitable for mocking ReadStreamingAsync return values.
+    /// </summary>
+    public static Azure.Response<DataLakeFileReadStreamingResult> CreateStreamingResponse(Stream content)
+    {
+        var result = CreateStreamingResult(content);
+        var rawResponse = CreateMockRawResponse();
+        return Azure.Response.FromValue(result, rawResponse);
+    }
+
+    /// <summary>
+    /// Creates a <see cref="DataLakeFileReadResult"/> via the DataLake model factory.
+    /// Use for mocking ReadContentAsync return values.
+    /// </summary>
+    public static Azure.Response<DataLakeFileReadResult> CreateContentResponse(BinaryData content)
+    {
+        var details = CreateFileDownloadDetails();
+        var result = DataLakeModelFactory.DataLakeFileReadResult(content, details);
+        var rawResponse = CreateMockRawResponse();
+        return Azure.Response.FromValue(result, rawResponse);
+    }
+
+    /// <summary>
+    /// Creates a <see cref="PathProperties"/> via the DataLake model factory with essential values.
+    /// </summary>
+    public static PathProperties CreatePathProperties(
+        long contentLength = 1024,
+        string contentType = "application/octet-stream",
+        string? etag = null)
+    {
+        return DataLakeModelFactory.PathProperties(
+            lastModified: DateTimeOffset.UtcNow,
+            creationTime: DateTimeOffset.UtcNow.AddDays(-1),
+            metadata: new Dictionary<string, string>(),
+            copyCompletionTime: default,
+            copyStatusDescription: null,
+            copyId: null,
+            copyProgress: null,
+            copySource: null,
+            copyStatus: CopyStatus.Success,
+            isIncrementalCopy: false,
+            leaseDuration: DataLakeLeaseDuration.Infinite,
+            leaseState: DataLakeLeaseState.Available,
+            leaseStatus: DataLakeLeaseStatus.Unlocked,
+            contentLength: contentLength,
+            contentType: contentType,
+            eTag: new ETag(etag ?? "\"test-etag\""),
+            contentHash: null,
+            contentEncoding: null,
+            contentDisposition: null,
+            contentLanguage: null,
+            cacheControl: null,
+            acceptRanges: null,
+            isServerEncrypted: false,
+            encryptionKeySha256: null,
+            accessTier: null,
+            archiveStatus: null,
+            accessTierChangeTime: default,
+            isDirectory: false);
+    }
 }
