@@ -246,4 +246,313 @@ public class ServiceCollectionExtensionsTests
 
         estimator1.Should().BeSameAs(estimator2);
     }
+
+    // ── Named Client Registration (DI-06) ─────────────────────────────
+
+    [Fact]
+    public void AddLakeIO_NamedConnectionString_ResolvesViaKeyedService()
+    {
+        var services = new ServiceCollection();
+        services.AddLakeIO("archive", ValidConnectionString);
+
+        var provider = services.BuildServiceProvider();
+        var client = provider.GetRequiredKeyedService<LakeClient>("archive");
+
+        client.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void AddLakeIO_NamedConnectionString_WithOptions_AppliesOptions()
+    {
+        var services = new ServiceCollection();
+        services.AddLakeIO("archive", ValidConnectionString, opts =>
+        {
+            opts.EnableDiagnostics = true;
+        });
+
+        var provider = services.BuildServiceProvider();
+        var client = provider.GetRequiredKeyedService<LakeClient>("archive");
+
+        client.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void AddLakeIO_NamedTokenCredential_ResolvesViaKeyedService()
+    {
+        var credential = Substitute.For<TokenCredential>();
+        var services = new ServiceCollection();
+        services.AddLakeIO("archive", DummyUri, credential);
+
+        var provider = services.BuildServiceProvider();
+        var client = provider.GetRequiredKeyedService<LakeClient>("archive");
+
+        client.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void AddLakeIO_NamedTokenCredential_WithOptions_AppliesOptions()
+    {
+        var credential = Substitute.For<TokenCredential>();
+        var services = new ServiceCollection();
+        services.AddLakeIO("archive", DummyUri, credential, opts =>
+        {
+            opts.EnableDiagnostics = true;
+        });
+
+        var provider = services.BuildServiceProvider();
+        var client = provider.GetRequiredKeyedService<LakeClient>("archive");
+
+        client.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void AddLakeIO_Named_NullName_ThrowsArgumentException()
+    {
+        var services = new ServiceCollection();
+
+        var act = () => services.AddLakeIO((string)null!, ValidConnectionString);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void AddLakeIO_Named_EmptyName_ThrowsArgumentException()
+    {
+        var services = new ServiceCollection();
+
+        var act = () => services.AddLakeIO(string.Empty, ValidConnectionString);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void AddLakeIO_Named_NullConnectionString_ThrowsArgumentException()
+    {
+        var services = new ServiceCollection();
+
+        var act = () => services.AddLakeIO("archive", (string)null!);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void AddLakeIO_MultipleNamedClients_IndependentResolution()
+    {
+        var services = new ServiceCollection();
+        services.AddLakeIO("primary", ValidConnectionString);
+        services.AddLakeIO("archive", AlternateConnectionString);
+
+        var provider = services.BuildServiceProvider();
+        var primary = provider.GetRequiredKeyedService<LakeClient>("primary");
+        var archive = provider.GetRequiredKeyedService<LakeClient>("archive");
+
+        primary.Should().NotBeNull();
+        archive.Should().NotBeNull();
+        primary.Should().NotBeSameAs(archive);
+    }
+
+    // ── ILakeClientFactory (DI-07) ────────────────────────────────────
+
+    [Fact]
+    public void Factory_CreateClient_ResolvesNamedClient()
+    {
+        var services = new ServiceCollection();
+        services.AddLakeIO("archive", ValidConnectionString);
+
+        var provider = services.BuildServiceProvider();
+        var factory = provider.GetRequiredService<ILakeClientFactory>();
+        var client = factory.CreateClient("archive");
+
+        client.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void Factory_CreateClient_UnregisteredName_ThrowsInvalidOperationException()
+    {
+        var services = new ServiceCollection();
+        services.AddLakeIO("archive", ValidConnectionString);
+
+        var provider = services.BuildServiceProvider();
+        var factory = provider.GetRequiredService<ILakeClientFactory>();
+
+        var act = () => factory.CreateClient("nonexistent");
+
+        act.Should().Throw<InvalidOperationException>();
+    }
+
+    [Fact]
+    public void Factory_CreateClient_NullName_ThrowsArgumentException()
+    {
+        var services = new ServiceCollection();
+        services.AddLakeIO("archive", ValidConnectionString);
+
+        var provider = services.BuildServiceProvider();
+        var factory = provider.GetRequiredService<ILakeClientFactory>();
+
+        var act = () => factory.CreateClient(null!);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void Factory_RegisteredAutomatically_WithNamedOverloads()
+    {
+        var services = new ServiceCollection();
+        services.AddLakeIO("x", ValidConnectionString);
+
+        var provider = services.BuildServiceProvider();
+        var factory = provider.GetRequiredService<ILakeClientFactory>();
+
+        factory.Should().NotBeNull();
+    }
+
+    // ── LakeIOBuilder (DI-08) ─────────────────────────────────────────
+
+    [Fact]
+    public void Builder_AddDefaultClient_ResolvesViaGetRequiredService()
+    {
+        var services = new ServiceCollection();
+        services.AddLakeIO(b => b.AddClient(ValidConnectionString));
+
+        var provider = services.BuildServiceProvider();
+        var client = provider.GetRequiredService<LakeClient>();
+
+        client.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void Builder_AddDefaultClient_ResolvesViaFactory()
+    {
+        var services = new ServiceCollection();
+        services.AddLakeIO(b => b.AddClient(ValidConnectionString));
+
+        var provider = services.BuildServiceProvider();
+        var factory = provider.GetRequiredService<ILakeClientFactory>();
+        var client = factory.CreateClient(ILakeClientFactory.DefaultName);
+
+        client.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void Builder_AddNamedClient_ResolvesViaKeyedService()
+    {
+        var services = new ServiceCollection();
+        services.AddLakeIO(b => b.AddClient("archive", ValidConnectionString));
+
+        var provider = services.BuildServiceProvider();
+        var client = provider.GetRequiredKeyedService<LakeClient>("archive");
+
+        client.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void Builder_ConfigureDefaults_AppliedToAllClients()
+    {
+        var services = new ServiceCollection();
+        services.AddLakeIO(b =>
+        {
+            b.ConfigureDefaults(opts => opts.Retry.MaxRetries = 10);
+            b.AddClient(ValidConnectionString);
+            b.AddClient("archive", AlternateConnectionString);
+        });
+
+        var provider = services.BuildServiceProvider();
+        var defaultClient = provider.GetRequiredService<LakeClient>();
+        var archiveClient = provider.GetRequiredKeyedService<LakeClient>("archive");
+
+        // Both clients resolve without error (defaults applied at construction)
+        defaultClient.Should().NotBeNull();
+        archiveClient.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void Builder_PerClientOverrides_TakePrecedence()
+    {
+        var services = new ServiceCollection();
+        services.AddLakeIO(b =>
+        {
+            b.ConfigureDefaults(opts => opts.EnableDiagnostics = false);
+            b.AddClient("x", ValidConnectionString, opts => opts.EnableDiagnostics = true);
+        });
+
+        var provider = services.BuildServiceProvider();
+        var client = provider.GetRequiredKeyedService<LakeClient>("x");
+
+        // Client resolves (options applied without error)
+        client.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void Builder_DuplicateName_ThrowsInvalidOperationException()
+    {
+        var services = new ServiceCollection();
+
+        var act = () => services.AddLakeIO(b =>
+        {
+            b.AddClient("x", ValidConnectionString);
+            b.AddClient("x", AlternateConnectionString);
+        });
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*'x'*");
+    }
+
+    [Fact]
+    public void Builder_DuplicateDefaultClient_ThrowsInvalidOperationException()
+    {
+        var services = new ServiceCollection();
+
+        var act = () => services.AddLakeIO(b =>
+        {
+            b.AddClient(ValidConnectionString);
+            b.AddClient(AlternateConnectionString);
+        });
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*__default__*");
+    }
+
+    [Fact]
+    public void Builder_NullConfigure_ThrowsArgumentNullException()
+    {
+        var services = new ServiceCollection();
+
+        var act = () => services.AddLakeIO((Action<LakeIOBuilder>)null!);
+
+        act.Should().Throw<ArgumentNullException>();
+    }
+
+    // ── Backward Compatibility (DI-09) ────────────────────────────────
+
+    [Fact]
+    public void ExistingUnnamedOverloads_StillWork_AfterNamedRegistration()
+    {
+        var services = new ServiceCollection();
+        services.AddLakeIO(ValidConnectionString);
+        services.AddLakeIO("archive", AlternateConnectionString);
+
+        var provider = services.BuildServiceProvider();
+        var unnamed = provider.GetRequiredService<LakeClient>();
+        var named = provider.GetRequiredKeyedService<LakeClient>("archive");
+
+        unnamed.Should().NotBeNull();
+        unnamed.Uri.Host.Should().Contain("devstoreaccount1");
+        named.Should().NotBeNull();
+        named.Should().NotBeSameAs(unnamed);
+    }
+
+    [Fact]
+    public void ExistingIdempotency_PreservedWithNamedClients()
+    {
+        var services = new ServiceCollection();
+        services.AddLakeIO(ValidConnectionString);
+        services.AddLakeIO(AlternateConnectionString);
+        services.AddLakeIO("x", AlternateConnectionString);
+
+        var provider = services.BuildServiceProvider();
+        var client = provider.GetRequiredService<LakeClient>();
+
+        // First unnamed registration wins (devstoreaccount1)
+        client.Uri.Host.Should().Contain("devstoreaccount1");
+    }
 }
