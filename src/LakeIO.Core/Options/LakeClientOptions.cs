@@ -57,6 +57,14 @@ public class LakeClientOptions
     /// <summary>Enable detailed diagnostic logging.</summary>
     public bool EnableDiagnostics { get; set; }
 
+    private RetryHelper? _retryHelper;
+
+    /// <summary>
+    /// Gets the lazily-constructed <see cref="RetryHelper"/> for application-level retries.
+    /// Built from <see cref="Retry"/> options on first access and cached thereafter.
+    /// </summary>
+    internal RetryHelper RetryHelper => _retryHelper ??= new RetryHelper(Retry);
+
     /// <summary>
     /// Converts to Azure SDK <see cref="DataLakeClientOptions"/> for internal use.
     /// </summary>

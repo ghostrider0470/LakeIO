@@ -18,4 +18,12 @@ public class LakeRetryOptions
 
     /// <summary>Retry mode. Default: Exponential.</summary>
     public RetryMode RetryMode { get; set; } = RetryMode.Exponential;
+
+    /// <summary>
+    /// Additional HTTP status codes to retry at the application level.
+    /// These are retried by LakeIO's Polly-based <c>RetryHelper</c>, in addition to the
+    /// transport-level codes retried by the Azure SDK (408, 429, 500, 502, 503, 504).
+    /// Default is empty (no additional retries). Common use: add 409 for Conflict.
+    /// </summary>
+    public IList<int> AdditionalRetryStatusCodes { get; set; } = new List<int>();
 }
