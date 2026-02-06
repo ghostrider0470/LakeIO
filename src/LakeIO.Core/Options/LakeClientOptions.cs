@@ -44,6 +44,13 @@ public class LakeClientOptions
     /// </remarks>
     public int DefaultParquetRowGroupSize { get; set; } = 10_000;
 
+    /// <summary>
+    /// Buffer threshold in bytes for ChunkedUploadStream auto-flush.
+    /// When the internal buffer reaches this size, data is flushed to Azure via AppendAsync.
+    /// Default: 4MB (4 * 1024 * 1024).
+    /// </summary>
+    public int ChunkedUploadThreshold { get; set; } = 4 * 1024 * 1024;
+
     /// <summary>Operation timeout. Default: 5 minutes.</summary>
     public TimeSpan OperationTimeout { get; set; } = TimeSpan.FromMinutes(5);
 
