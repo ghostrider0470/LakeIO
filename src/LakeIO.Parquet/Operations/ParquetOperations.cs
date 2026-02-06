@@ -75,7 +75,7 @@ public class ParquetOperations
             RowGroupSize = rowGroupSize
         };
 
-        using var memoryStream = new MemoryStream();
+        using var memoryStream = StreamPool.Manager.GetStream("ParquetOperations.WriteAsync");
         await ParquetSerializer.SerializeAsync(items, memoryStream, serializerOptions, cancellationToken).ConfigureAwait(false);
         memoryStream.Position = 0;
 
@@ -140,7 +140,7 @@ public class ParquetOperations
             RowGroupSize = rowGroupSize
         };
 
-        using var memoryStream = new MemoryStream();
+        using var memoryStream = StreamPool.Manager.GetStream("ParquetOperations.WriteStreamAsync");
         await ParquetSerializer.SerializeAsync(items, memoryStream, serializerOptions, cancellationToken).ConfigureAwait(false);
         memoryStream.Position = 0;
 
@@ -295,8 +295,8 @@ public class ParquetOperations
         await using var downloadStream = await fileClient.OpenReadAsync(
             new DataLakeOpenReadOptions(allowModifications: false), cancellationToken).ConfigureAwait(false);
 
-        // Copy to a seekable MemoryStream (needed for Parquet append)
-        using var fileStream = new MemoryStream();
+        // Copy to a seekable pooled MemoryStream (needed for Parquet append)
+        using var fileStream = StreamPool.Manager.GetStream("ParquetOperations.MergeAsync");
         await downloadStream.CopyToAsync(fileStream, cancellationToken).ConfigureAwait(false);
         fileStream.Position = 0;
 
