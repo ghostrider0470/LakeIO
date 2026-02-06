@@ -94,8 +94,11 @@ public class CsvOperations
                 uploadOptions.Conditions = new DataLakeRequestConditions { IfNoneMatch = new ETag("*") };
             }
 
-            var response = await fileClient.UploadAsync(memoryStream, uploadOptions, cancellationToken)
-                .ConfigureAwait(false);
+            var response = await _options!.RetryHelper.ExecuteAsync(async ct =>
+            {
+                memoryStream.Position = 0;
+                return await fileClient.UploadAsync(memoryStream, uploadOptions, ct).ConfigureAwait(false);
+            }, cancellationToken).ConfigureAwait(false);
 
             var result = new Response<StorageResult>(
                 new StorageResult

@@ -76,9 +76,12 @@ public class BatchOperations
 
                 try
                 {
-                    await _fileSystemClient!.GetFileClient(path)
-                        .DeleteAsync(cancellationToken: cancellationToken)
-                        .ConfigureAwait(false);
+                    await _options!.RetryHelper.ExecuteAsync(async ct =>
+                    {
+                        await _fileSystemClient!.GetFileClient(path)
+                            .DeleteAsync(cancellationToken: ct)
+                            .ConfigureAwait(false);
+                    }, cancellationToken).ConfigureAwait(false);
 
                     items.Add(new BatchItemResult { Path = path, Succeeded = true });
                     succeeded++;
@@ -179,10 +182,13 @@ public class BatchOperations
                         destConditions = new DataLakeRequestConditions { IfNoneMatch = new ETag("*") };
                     }
 
-                    await fileClient.RenameAsync(
-                        item.DestinationPath,
-                        destinationConditions: destConditions,
-                        cancellationToken: cancellationToken).ConfigureAwait(false);
+                    await _options!.RetryHelper.ExecuteAsync(async ct =>
+                    {
+                        await fileClient.RenameAsync(
+                            item.DestinationPath,
+                            destinationConditions: destConditions,
+                            cancellationToken: ct).ConfigureAwait(false);
+                    }, cancellationToken).ConfigureAwait(false);
 
                     results.Add(new BatchItemResult { Path = item.SourcePath, Succeeded = true });
                     succeeded++;
@@ -355,6 +361,12 @@ public class BatchOperations
             uploadOptions.Conditions = new DataLakeRequestConditions { IfNoneMatch = new ETag("*") };
         }
 
-        await destFileClient.UploadAsync(content, uploadOptions, cancellationToken).ConfigureAwait(false);
+        // Note: If source stream is not seekable, retry after partial upload will fail.
+        // This is acceptable -- buffering into memory defeats the streaming purpose.
+        await _options!.RetryHelper.ExecuteAsync(async ct =>
+        {
+            if (content.CanSeek) content.Position = 0;
+            await destFileClient.UploadAsync(content, uploadOptions, ct).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
     }
 }
