@@ -25,4 +25,11 @@ public class ParquetOptions
     /// then to 10,000.
     /// </summary>
     public int? RowGroupSize { get; set; }
+
+    /// <summary>
+    /// When true, automatically runs Quick validation after write operations
+    /// (WriteAsync, WriteStreamAsync). Catches partial uploads.
+    /// Default: null (treated as false).
+    /// </summary>
+    public bool? ValidateAfterWrite { get; set; }
 }

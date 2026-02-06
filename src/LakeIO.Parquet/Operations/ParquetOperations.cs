@@ -622,6 +622,149 @@ public class ParquetOperations
     }
 
     /// <summary>
+    /// Validates a Parquet file at the specified depth, from a quick size check to a full metadata parse.
+    /// </summary>
+    /// <param name="path">The file path within the file system (e.g., <c>"data/records.parquet"</c>).</param>
+    /// <param name="level">
+    /// The validation depth. <see cref="ParquetValidationLevel.Quick"/> checks file size only,
+    /// <see cref="ParquetValidationLevel.Standard"/> adds PAR1 magic byte verification,
+    /// and <see cref="ParquetValidationLevel.Deep"/> adds full Parquet.Net metadata parsing.
+    /// Default is <see cref="ParquetValidationLevel.Standard"/>.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A <see cref="ParquetValidationResult"/> containing the validation outcome and any extracted metadata.</returns>
+    /// <remarks>
+    /// <para>This is a read-only operation — no data is modified. Azure SDK transport-level retries
+    /// handle transient failures automatically.</para>
+    /// <para>At <see cref="ParquetValidationLevel.Deep"/> level, the method uses
+    /// <c>ParquetReader.CreateAsync</c> which internally validates the Parquet footer and schema,
+    /// so explicit header/footer range reads from the Standard level are still performed first
+    /// as a fast-fail before the heavier OpenRead call.</para>
+    /// </remarks>
+    public virtual async Task<ParquetValidationResult> ValidateAsync(
+        string path,
+        ParquetValidationLevel level = ParquetValidationLevel.Standard,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+
+        using var activity = LakeIOActivitySource.Source.StartActivity("parquet.validate");
+        activity?.SetTag("lakeio.filesystem", _fileSystemClient!.Name);
+        activity?.SetTag("lakeio.path", path);
+        activity?.SetTag("lakeio.operation", "parquet.validate");
+        activity?.SetTag("lakeio.validation_level", level.ToString());
+
+        var startTimestamp = Stopwatch.GetTimestamp();
+        var success = false;
+        try
+        {
+            var fileClient = _fileSystemClient!.GetFileClient(path);
+
+            // Quick: check file size >= 12 bytes (4-byte header + 4-byte footer length + 4-byte footer magic)
+            var properties = await fileClient.GetPropertiesAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            var fileSize = properties.Value.ContentLength;
+
+            if (fileSize < 12)
+            {
+                var result = CreateResult(false, "File size is less than 12 bytes (minimum valid Parquet file requires 12 bytes)", fileSize, level);
+                success = true;
+                return result;
+            }
+
+            if (level == ParquetValidationLevel.Quick)
+            {
+                var result = CreateResult(true, null, fileSize, level);
+                success = true;
+                return result;
+            }
+
+            // Standard: verify PAR1 magic bytes at header (offset 0, 4 bytes) and footer (offset fileSize-4, 4 bytes)
+            byte[] magicBytes = [0x50, 0x41, 0x52, 0x31]; // PAR1
+
+            var headerOptions = new DataLakeFileReadOptions { Range = new HttpRange(0, 4) };
+            var headerResponse = await fileClient.ReadContentAsync(headerOptions, cancellationToken).ConfigureAwait(false);
+            if (!headerResponse.Value.Content.ToMemory().Span.SequenceEqual(magicBytes))
+            {
+                var result = CreateResult(false, "Missing PAR1 header magic bytes", fileSize, level);
+                success = true;
+                return result;
+            }
+
+            var footerOptions = new DataLakeFileReadOptions { Range = new HttpRange(fileSize - 4, 4) };
+            var footerResponse = await fileClient.ReadContentAsync(footerOptions, cancellationToken).ConfigureAwait(false);
+            if (!footerResponse.Value.Content.ToMemory().Span.SequenceEqual(magicBytes))
+            {
+                var result = CreateResult(false, "Missing PAR1 footer magic bytes", fileSize, level);
+                success = true;
+                return result;
+            }
+
+            if (level == ParquetValidationLevel.Standard)
+            {
+                var result = CreateResult(true, null, fileSize, level);
+                success = true;
+                return result;
+            }
+
+            // Deep: full Parquet.Net metadata parse via ParquetReader
+            await using var stream = await fileClient.OpenReadAsync(
+                new DataLakeOpenReadOptions(allowModifications: false), cancellationToken).ConfigureAwait(false);
+
+            using var reader = await ParquetReader.CreateAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            var deepResult = new ParquetValidationResult
+            {
+                IsValid = true,
+                ErrorReason = null,
+                FileSize = fileSize,
+                Level = level,
+                RowGroupCount = reader.RowGroupCount,
+                FieldNames = reader.Schema.GetDataFields().Select(f => f.Name).ToList()
+            };
+
+            success = true;
+            return deepResult;
+        }
+        catch (Exception ex) when (ex is not ArgumentException)
+        {
+            success = true; // We handled it — returning a result, not re-throwing
+            return CreateResult(false, ex.Message, null, level);
+        }
+        finally
+        {
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            if (success)
+            {
+                LakeIOMetrics.OperationsTotal.Add(1,
+                    new KeyValuePair<string, object?>("operation_type", "parquet.validate"));
+                LakeIOMetrics.OperationDuration.Record(elapsed,
+                    new KeyValuePair<string, object?>("operation_type", "parquet.validate"));
+                activity?.SetStatus(ActivityStatusCode.Ok);
+            }
+            else
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, "Operation failed");
+                activity?.SetTag("lakeio.error", true);
+                LakeIOMetrics.OperationsTotal.Add(1,
+                    new KeyValuePair<string, object?>("operation_type", "parquet.validate"),
+                    new KeyValuePair<string, object?>("error", "true"));
+                LakeIOMetrics.OperationDuration.Record(elapsed,
+                    new KeyValuePair<string, object?>("operation_type", "parquet.validate"),
+                    new KeyValuePair<string, object?>("error", "true"));
+            }
+        }
+    }
+
+    private static ParquetValidationResult CreateResult(bool isValid, string? errorReason, long? fileSize, ParquetValidationLevel level)
+        => new()
+        {
+            IsValid = isValid,
+            ErrorReason = errorReason,
+            FileSize = fileSize,
+            Level = level
+        };
+
+    /// <summary>
     /// Resolves Parquet options from the per-operation options, LakeClientOptions defaults, and library defaults.
     /// </summary>
     private (CompressionMethod compression, int rowGroupSize) ResolveOptions(ParquetOptions? options)
