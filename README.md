@@ -1,401 +1,395 @@
 # LakeIO
 
-[![NuGet Version](https://img.shields.io/nuget/v/LakeIO)](https://www.nuget.org/packages/LakeIO/)
+[![NuGet Version](https://img.shields.io/nuget/v/LakeIO.Core)](https://www.nuget.org/packages/LakeIO.Core/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A comprehensive .NET library for working with Azure Data Lake Storage Gen2, supporting JSON, Parquet, and CSV file formats with thread-safe client caching and an intuitive API.
+.NET library for Azure Data Lake Storage Gen2 with format-specific clients, streaming I/O, and production-ready observability.
 
 ## Features
 
-- **Multiple File Format Support**
-  - JSON files with System.Text.Json
-  - Parquet files with Parquet.Net and custom attribute mapping
-  - CSV files with CsvHelper and flexible column mapping
-- **Thread-Safe Client Management**: Efficient caching of Azure Data Lake clients
-- **Comprehensive File Operations**: Read, write, update, and validate files
-- **Directory Operations**: List files with filtering and metadata
-- **Async/Await Pattern**: All I/O operations are asynchronous
-- **Dependency Injection Ready**: Easy integration with .NET DI containers
-- **Robust Error Handling**: Detailed error messages and proper exception handling
-- **Automatic Directory Creation**: Creates directories as needed
-- **Flexible Configuration**: Multiple connection string resolution options
-
-## Prerequisites
-
-- .NET 6.0 or later
-- Azure Data Lake Storage Gen2 account
-- Connection string with appropriate permissions
+- **Multi-package architecture** -- install only what you need (Core, Parquet, Telemetry, DI)
+- **Format-specific operations** -- JSON (with NDJSON streaming), Parquet (with schema evolution), CSV
+- **Raw file operations** -- upload, download, delete, move, exists, get properties
+- **Batch operations** -- delete, move, copy with per-item error collection (never throws on partial failure)
+- **Directory listing** -- `IAsyncEnumerable<PathItem>` with `PathFilter` fluent API for client-side filtering
+- **Streaming I/O** -- `IAsyncEnumerable` reads and `ChunkedUploadStream` writes handle files over 1 GB without OOM
+- **BCL-native observability** -- `System.Diagnostics.ActivitySource` tracing and `System.Diagnostics.Metrics.Meter` metrics
+- **Dependency injection** -- `AddLakeIO()` and `AddLakeIOTelemetry()` service collection extensions
 
 ## Installation
 
 ```bash
-dotnet add package LakeIO
-```
+# Core (JSON, CSV, File, Batch, Directory operations)
+dotnet add package LakeIO.Core
 
-## Configuration
+# Parquet support (optional)
+dotnet add package LakeIO.Parquet
 
-Add your Data Lake connection string to your `appsettings.json`:
+# Telemetry / OpenTelemetry integration (optional)
+dotnet add package LakeIO.Telemetry
 
-```json
-{
-  "DataLakeConnectionString": "DefaultEndpointsProtocol=https;AccountName=..."
-
-  // OR
-
-  "DataLake": {
-    "ConnectionString": "DefaultEndpointsProtocol=https;AccountName=..."
-  }
-}
+# Dependency injection extensions (optional)
+dotnet add package LakeIO.DependencyInjection
 ```
 
 ## Quick Start
 
 ```csharp
 using LakeIO;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging;
 
-// Set up configuration
-var configuration = new ConfigurationBuilder()
-    .AddJsonFile("appsettings.json")
-    .AddEnvironmentVariables()
-    .Build();
+var client = new LakeClient("DefaultEndpointsProtocol=https;AccountName=...");
+var fs = client.GetFileSystemClient("my-filesystem");
 
-// Create a logger (or use DI)
-using var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
-var logger = loggerFactory.CreateLogger<LakeContext>();
+// Write JSON
+var data = new { Id = 1, Name = "Example" };
+await fs.Json().WriteAsync("data/example.json", data);
 
-// Create a new instance of LakeContext
-var lakeContext = new LakeContext(configuration, logger);
-
-// Store an object as JSON
-var user = new { Id = 1, Name = "John Doe", Email = "john@example.com" };
-await lakeContext.StoreItemAsJson(user, "users", "myfilesystem", "user_1.json");
-
-// Read it back
-var retrievedUser = await lakeContext.ReadJsonFile<User>("users/user_1.json", "myfilesystem");
+// Read JSON
+var result = await fs.Json().ReadAsync<MyModel>("data/example.json");
+Console.WriteLine(result.Value.Name);
 ```
 
-## Dependency Injection
+## Authentication
+
+### Connection string
 
 ```csharp
-using LakeIO.Extensions;
-
-// In your Program.cs or Startup.cs
-services.AddLakeIO();
+var client = new LakeClient("DefaultEndpointsProtocol=https;AccountName=...");
 ```
 
-## Detailed Usage Examples
+### TokenCredential (Azure Identity)
+
+```csharp
+var client = new LakeClient(
+    new Uri("https://myaccount.dfs.core.windows.net"),
+    new DefaultAzureCredential());
+```
+
+### With options
+
+```csharp
+var client = new LakeClient("DefaultEndpointsProtocol=https;AccountName=...",
+    new LakeClientOptions
+    {
+        DefaultParquetCompression = "Snappy",
+        DefaultParquetRowGroupSize = 50_000,
+        ChunkedUploadThreshold = 8 * 1024 * 1024 // 8 MB chunks
+    });
+```
+
+## Operations
+
+All format operations are accessed via extension methods on `FileSystemClient`:
+
+```csharp
+var fs = client.GetFileSystemClient("my-filesystem");
+
+fs.Json()       // JSON and NDJSON operations
+fs.Csv()        // CSV operations
+fs.Parquet()    // Parquet operations (requires LakeIO.Parquet package)
+fs.Files()      // Raw file upload/download/delete/move
+fs.Batch()      // Batch delete/move/copy
+fs.Directory()  // Directory listing and counting
+```
 
 ### JSON Operations
 
 ```csharp
-// Store a single item as JSON
-var product = new Product { Id = 1, Name = "Laptop", Price = 999.99 };
-await lakeContext.StoreItemAsJson(
-    product,
-    "products/electronics",
-    "myfilesystem",
-    "laptop.json");
+// Write a single object as JSON
+await fs.Json().WriteAsync("users/user1.json", new User { Id = 1, Name = "Alice" });
 
-// Read a single JSON object
-var product = await lakeContext.ReadJsonFile<Product>(
-    "products/laptop.json",
-    "myfilesystem");
+// Read a JSON file
+Response<User?> result = await fs.Json().ReadAsync<User>("users/user1.json");
+User user = result.Value;
 
-// Read a JSON array
-var products = await lakeContext.ReadJsonItems<Product>(
-    "products/all-products.json",
-    "myfilesystem");
+// Append a line to an NDJSON file (creates if not exists)
+await fs.Json().AppendNdjsonAsync("events/log.ndjson", new Event { Type = "click", Ts = DateTime.UtcNow });
 
-// Update an existing JSON file
-product.Price = 899.99;
-await lakeContext.UpdateJsonFile(
-    product,
-    "products/laptop.json",
-    "myfilesystem");
+// Stream NDJSON records without loading entire file into memory
+await foreach (Event e in fs.Json().ReadNdjsonAsync<Event>("events/log.ndjson"))
+{
+    Console.WriteLine(e.Type);
+}
+```
+
+Per-operation `JsonOptions` can override the default `JsonSerializerOptions`:
+
+```csharp
+await fs.Json().WriteAsync("data.json", value, new JsonOptions
+{
+    SerializerOptions = new JsonSerializerOptions { WriteIndented = true }
+});
 ```
 
 ### Parquet Operations
 
-To use Parquet storage, implement the `IParquetSerializable<T>` interface:
+> Requires the `LakeIO.Parquet` package.
 
 ```csharp
-using LakeIO.Annotations;
+using LakeIO.Parquet;
 
-public class SensorData : IParquetSerializable<SensorData>
+// Write a collection to Parquet
+IReadOnlyCollection<SensorReading> readings = GetReadings();
+await fs.Parquet().WriteAsync("data/readings.parquet", readings);
+
+// Stream read -- IAsyncEnumerable, no full buffering
+await foreach (SensorReading r in fs.Parquet().ReadStreamAsync<SensorReading>("data/readings.parquet"))
 {
-    [ParquetColumn("sensor_id")]
-    public string SensorId { get; set; }
-
-    [ParquetColumn("temperature")]
-    public double Temperature { get; set; }
-
-    [ParquetColumn("timestamp")]
-    public DateTime Timestamp { get; set; }
+    Process(r);
 }
 
-// Store items as Parquet
-var readings = new List<SensorData>
+// Streaming write from an IAsyncEnumerable source (bounded memory)
+IAsyncEnumerable<SensorReading> source = ProduceReadingsAsync();
+await fs.Parquet().WriteStreamAsync("data/readings.parquet", source);
+
+// Inspect schema without loading data
+ParquetSchema schema = await fs.Parquet().GetSchemaAsync("data/readings.parquet");
+
+// Merge with automatic schema evolution (appends new columns as nullable)
+await fs.Parquet().MergeAsync("data/readings.parquet", newReadings);
+
+// Compact NDJSON to Parquet (streaming, bounded memory)
+await fs.Parquet().CompactNdjsonAsync<SensorReading>("events/log.ndjson", "data/compacted.parquet");
+```
+
+Per-operation `ParquetOptions` can override compression and row group size:
+
+```csharp
+await fs.Parquet().WriteAsync("data/readings.parquet", readings, new ParquetOptions
 {
-    new() { SensorId = "S001", Temperature = 23.5, Timestamp = DateTime.UtcNow },
-    new() { SensorId = "S002", Temperature = 24.1, Timestamp = DateTime.UtcNow }
-};
-
-await lakeContext.StoreItemsAsParquet(
-    readings,
-    "sensor-data/2024",
-    "myfilesystem",
-    "readings.parquet");
-
-// Read Parquet file
-var data = await lakeContext.ReadParquetItems<SensorData>(
-    "sensor-data/2024/readings.parquet",
-    "myfilesystem");
-
-// Validate Parquet file
-bool isValid = await lakeContext.IsValidParquetFile(
-    "sensor-data/2024/readings.parquet",
-    "myfilesystem");
+    CompressionMethod = CompressionMethod.Zstd,
+    RowGroupSize = 100_000
+});
 ```
 
 ### CSV Operations
 
 ```csharp
-// Store items as CSV with custom delimiter
+// Write a collection to CSV
 var orders = new List<Order>
 {
-    new() { OrderId = 1, CustomerName = "Alice", Total = 150.00 },
-    new() { OrderId = 2, CustomerName = "Bob", Total = 200.00 }
+    new() { OrderId = 1, Customer = "Alice", Total = 150.00m },
+    new() { OrderId = 2, Customer = "Bob", Total = 200.00m }
 };
+await fs.Csv().WriteAsync("reports/orders.csv", orders);
 
-await lakeContext.StoreItemsAsCsv(
-    orders,
-    "reports/orders",
-    "myfilesystem",
-    "daily-orders.csv",
-    delimiter: ",",
-    hasHeader: true);
+// Read entire CSV into memory
+Response<IReadOnlyList<Order>> result = await fs.Csv().ReadAsync<Order>("reports/orders.csv");
 
-// Store with custom column mapping
-var columnMapping = new Dictionary<string, string>
+// Stream read -- IAsyncEnumerable for large CSV files
+await foreach (Order order in fs.Csv().ReadStreamAsync<Order>("reports/orders.csv"))
 {
-    ["OrderId"] = "Order ID",
-    ["CustomerName"] = "Customer",
-    ["Total"] = "Total Amount"
-};
-
-await lakeContext.StoreItemsAsCsv(
-    orders,
-    "reports/orders",
-    "myfilesystem",
-    columnMapping: columnMapping);
-
-// Read CSV file
-var orders = await lakeContext.ReadCsvItems<Order>(
-    "reports/orders/daily-orders.csv",
-    "myfilesystem",
-    delimiter: ",",
-    hasHeader: true);
-
-// Update CSV file
-orders.Add(new Order { OrderId = 3, CustomerName = "Charlie", Total = 175.00 });
-await lakeContext.UpdateCsvFileWithItems(
-    orders,
-    "reports/orders/daily-orders.csv",
-    "myfilesystem");
+    Process(order);
+}
 ```
 
-### Directory and File Listing
+Per-operation `CsvOptions` can override delimiter, header, and culture:
 
 ```csharp
-// List all files in a directory
-var files = await lakeContext.ListFiles(
-    "products",
-    "myfilesystem",
-    recursive: true);
-
-foreach (var file in files)
+await fs.Csv().WriteAsync("data.tsv", items, new CsvOptions
 {
-    Console.WriteLine($"File: {file}");
-}
-
-// List files by date range
-var recentFiles = await lakeContext.ListFilesByDateRange(
-    "logs",
-    "myfilesystem",
-    fromDate: DateTime.UtcNow.AddDays(-7),
-    toDate: DateTime.UtcNow,
-    recursive: true);
-
-// List files with metadata
-var filesWithInfo = await lakeContext.ListFilesWithMetadata(
-    "data",
-    "myfilesystem",
-    recursive: true);
-
-foreach (var fileInfo in filesWithInfo)
-{
-    Console.WriteLine($"Path: {fileInfo.Path}");
-    Console.WriteLine($"Size: {fileInfo.Size} bytes");
-    Console.WriteLine($"Modified: {fileInfo.LastModified}");
-    Console.WriteLine($"Is Directory: {fileInfo.IsDirectory}");
-}
+    Delimiter = "\t",
+    HasHeader = true,
+    CultureName = "de-DE"
+});
 ```
 
-### Client Management
+### File Operations
 
 ```csharp
-// Get or create a service client (cached)
-var serviceClient = lakeContext.GetOrCreateServiceClient(connectionString);
+// Upload a stream
+await using var stream = File.OpenRead("local-file.bin");
+await fs.Files().UploadAsync("uploads/file.bin", stream, contentType: "application/octet-stream");
 
-// Get or create a file system client (cached)
-var fileSystemClient = lakeContext.GetOrCreateFileSystemClient(
-    "myfilesystem",
-    connectionString);
+// Download as BinaryData (small files)
+Response<BinaryData> data = await fs.Files().DownloadAsync("uploads/file.bin");
 
-// Dispose to clean up all cached clients
-lakeContext.Dispose();
+// Download as Stream (large files, avoids memory pressure)
+Response<Stream> streamResult = await fs.Files().DownloadStreamAsync("uploads/file.bin");
+
+// Check existence
+Response<bool> exists = await fs.Files().ExistsAsync("uploads/file.bin");
+
+// Get file properties
+Response<PathProperties> props = await fs.Files().GetPropertiesAsync("uploads/file.bin");
+
+// Move / rename (server-side, no re-upload)
+await fs.Files().MoveAsync("uploads/file.bin", "archive/file.bin");
+
+// Delete
+await fs.Files().DeleteAsync("archive/file.bin");
 ```
 
-## API Reference
+### Batch Operations
 
-### LakeContext
-
-The main class for interacting with Azure Data Lake Storage.
-
-#### Constructor
-- `LakeContext(IConfiguration configuration, ILogger<LakeContext> logger)`
-
-#### JSON Methods
-- `StoreItemAsJson<T>` - Store a single item as JSON
-- `UpdateJsonFile<T>` - Update an existing JSON file
-- `ReadJsonFile<T>` - Read a single JSON object
-- `ReadJsonItems<T>` - Read a collection of JSON objects
-
-#### Parquet Methods
-- `StoreItemAsParquet<T>` - Store a single item as Parquet
-- `StoreItemsAsParquet<T>` - Store multiple items as Parquet
-- `UpdateParquetFile<T>` - Update with a single item
-- `UpdateParquetFileWithItems<T>` - Update with multiple items
-- `ReadParquetFile<T>` - Read a single Parquet object
-- `ReadParquetItems<T>` - Read multiple Parquet objects
-- `IsValidParquetFile` - Validate Parquet file format
-
-#### CSV Methods
-- `StoreItemAsCsv<T>` - Store a single item as CSV
-- `StoreItemsAsCsv<T>` - Store multiple items as CSV
-- `UpdateCsvFile<T>` - Update with a single item
-- `UpdateCsvFileWithItems<T>` - Update with multiple items
-- `ReadCsvFile<T>` - Read a single CSV object
-- `ReadCsvItems<T>` - Read multiple CSV objects
-
-#### Directory Operations
-- `ListFiles` - List all files in a directory
-- `ListFilesByDateRange` - List files filtered by modification date
-- `ListFilesWithMetadata` - List files with detailed metadata
-
-#### Client Management
-- `GetOrCreateServiceClient` - Get cached service client
-- `GetOrCreateFileSystemClient` - Get cached file system client
-
-### DataLakeFileInfo
-
-Metadata information for files and directories:
-- `Path` - Full path to the file
-- `Name` - File name only
-- `Size` - File size in bytes
-- `LastModified` - Last modification timestamp
-- `CreatedOn` - Creation timestamp (currently null)
-- `IsDirectory` - Whether the item is a directory
-
-## Advanced Features
-
-### Custom Parquet Attributes
-
-Use `ParquetColumnAttribute` to control Parquet serialization:
+Batch operations iterate sequentially and collect per-item errors without throwing on partial failure.
 
 ```csharp
-using LakeIO.Annotations;
-
-public class MetricData : IParquetSerializable<MetricData>
+// Batch delete
+BatchResult deleteResult = await fs.Batch().DeleteAsync(new[]
 {
-    [ParquetColumn("metric_name")]
-    public string Name { get; set; }
+    "temp/file1.json",
+    "temp/file2.json",
+    "temp/file3.json"
+});
 
-    [ParquetColumn("value", ParquetType = typeof(double))]
-    public decimal Value { get; set; }
-
-    [ParquetColumn("tags")]
-    public Dictionary<string, string> Tags { get; set; }
+if (!deleteResult.IsFullySuccessful)
+{
+    foreach (var item in deleteResult.Items.Where(i => !i.Succeeded))
+    {
+        Console.WriteLine($"Failed to delete {item.Path}: {item.Error}");
+    }
 }
+
+// Batch move
+BatchResult moveResult = await fs.Batch().MoveAsync(new[]
+{
+    new BatchMoveItem { SourcePath = "inbox/a.json", DestinationPath = "archive/a.json" },
+    new BatchMoveItem { SourcePath = "inbox/b.json", DestinationPath = "archive/b.json" }
+});
+
+// Batch copy (download-then-upload under the hood)
+BatchResult copyResult = await fs.Batch().CopyAsync(new[]
+{
+    new BatchCopyItem { SourcePath = "data/original.parquet", DestinationPath = "backup/original.parquet" }
+});
+
+// All batch methods accept IProgress<BatchProgress> for progress reporting
+var progress = new Progress<BatchProgress>(p =>
+    Console.WriteLine($"{p.Completed}/{p.Total} -- {p.CurrentPath}"));
+await fs.Batch().DeleteAsync(paths, progress);
 ```
 
-### Error Handling
+### Directory Operations
 
 ```csharp
-try
+// List all paths in a directory (IAsyncEnumerable, no buffering)
+await foreach (PathItem item in fs.Directory().GetPathsAsync(new GetPathsOptions
 {
-    await lakeContext.ReadJsonFile<User>("users/user.json", "myfilesystem");
-}
-catch (FileNotFoundException ex)
+    Path = "data",
+    Recursive = true
+}))
 {
-    // Handle missing file
+    Console.WriteLine($"{item.Name} ({item.ContentLength} bytes)");
 }
-catch (InvalidOperationException ex)
+
+// List with client-side filtering via PathFilter
+await foreach (PathItem item in fs.Directory().GetPathsAsync(new GetPathsOptions
 {
-    // Handle configuration issues
-}
-catch (Azure.RequestFailedException ex)
+    Path = "data",
+    Recursive = true,
+    Filter = new PathFilter()
+        .WithExtension(".json")
+        .LargerThan(1024)
+        .ModifiedAfter(DateTimeOffset.UtcNow.AddDays(-7))
+        .FilesOnly()
+}))
 {
-    // Handle Azure service errors
+    Console.WriteLine(item.Name);
 }
+
+// Count matching paths (streaming, no List<T> allocation)
+long count = await fs.Directory().CountAsync(new GetPathsOptions
+{
+    Path = "logs",
+    Recursive = true,
+    Filter = new PathFilter().WithExtension(".ndjson")
+});
+
+// Get properties for a specific path
+Response<FileProperties> props = await fs.Directory().GetPropertiesAsync("data/records.parquet");
 ```
 
-## Best Practices
+**PathFilter methods:** `WithExtension`, `ModifiedAfter`, `ModifiedBefore`, `LargerThan`, `SmallerThan`, `FilesOnly`, `DirectoriesOnly`, `NameContains`
 
-1. **Use Dependency Injection**: Register `LakeContext` as a singleton via `AddLakeIO()`
-2. **Handle Exceptions**: Always wrap operations in try-catch blocks
-3. **Validate File Paths**: Ensure paths use forward slashes
-4. **Dispose Properly**: Call `Dispose()` when done to clean up clients
-5. **Use Appropriate Formats**:
-   - JSON for flexible, human-readable data
-   - Parquet for large datasets and columnar analytics
-   - CSV for simple tabular data and Excel compatibility
+## Streaming
 
-## Troubleshooting
+LakeIO is designed to handle files larger than available memory.
 
-### Common Issues
+**Reading:** All operations that return `IAsyncEnumerable<T>` use `yield return` internally -- no full buffering. This includes `ReadNdjsonAsync`, `ReadStreamAsync` (CSV), `ReadStreamAsync` (Parquet), and `GetPathsAsync`.
 
-1. **Connection String Not Found**
-   - Verify configuration keys: `DataLakeConnectionString` or `DataLake:ConnectionString`
-   - Check environment variables and user secrets
+**Writing:** `ChunkedUploadStream` uploads data progressively via `AppendAsync` as the producer writes. Configure the chunk size via `LakeClientOptions.ChunkedUploadThreshold` (default 4 MB).
 
-2. **File Not Found Errors**
-   - Ensure file paths use forward slashes (`/`)
-   - Verify the file system name is correct
-   - Check permissions on the storage account
+**Parquet streaming write:** `WriteStreamAsync` consumes an `IAsyncEnumerable<T>` source and batches into row groups incrementally, keeping memory bounded to roughly one row group at a time.
 
-3. **Parquet Serialization Errors**
-   - Ensure class implements `IParquetSerializable<T>`
-   - Verify `ParquetColumnAttribute` usage
-   - Check that all properties have appropriate types
+## Dependency Injection
 
-## Contributing
+> Requires the `LakeIO.DependencyInjection` package.
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+```csharp
+using LakeIO;
+
+// Connection string
+services.AddLakeIO("DefaultEndpointsProtocol=https;AccountName=...");
+
+// TokenCredential
+services.AddLakeIO(
+    new Uri("https://myaccount.dfs.core.windows.net"),
+    new DefaultAzureCredential());
+
+// IConfiguration section (reads ConnectionString or ServiceUri key)
+services.AddLakeIO(configuration.GetSection("LakeIO"));
+
+// Connection string with custom options
+services.AddLakeIO("DefaultEndpointsProtocol=https;AccountName=...", options =>
+{
+    options.DefaultParquetCompression = "Zstd";
+    options.ChunkedUploadThreshold = 8 * 1024 * 1024;
+});
+
+// TokenCredential with custom options
+services.AddLakeIO(
+    new Uri("https://myaccount.dfs.core.windows.net"),
+    new DefaultAzureCredential(),
+    options => { options.EnableDiagnostics = true; });
+
+// Add telemetry (registers CostEstimator + ObservabilityOptions)
+services.AddLakeIOTelemetry();
+services.AddLakeIOTelemetry(opts => opts.EnableCostEstimation = true);
+```
+
+All `AddLakeIO` overloads register `LakeClient` as a singleton. Calling `AddLakeIO` multiple times is safe (first registration wins).
+
+## Observability
+
+LakeIO emits distributed traces and metrics using the BCL `System.Diagnostics` API, with no hard dependency on any telemetry SDK.
+
+| Concept | Name | Description |
+|---------|------|-------------|
+| ActivitySource | `LakeIO` | Emits spans for every storage operation (json.write, parquet.read_stream, file.upload, etc.) |
+| Meter | `LakeIO` | Emits counters and histograms |
+| Counter | `lakeio.operations.total` | Operation count by type |
+| Counter | `lakeio.bytes.transferred` | Bytes transferred by direction (read/write) |
+| Histogram | `lakeio.operations.duration` | Operation duration in seconds |
+
+### OpenTelemetry Integration
+
+> Requires the `LakeIO.Telemetry` package.
+
+```csharp
+using LakeIO.Telemetry;
+
+builder.Services.AddOpenTelemetry()
+    .WithTracing(tracing => tracing.AddLakeIOInstrumentation())
+    .WithMetrics(metrics => metrics.AddLakeIOInstrumentation());
+```
+
+The `LakeIO.Telemetry` package also provides `CostEstimator` for mapping operations to Azure Storage pricing tiers.
+
+## Package Architecture
+
+| Package | Purpose | Dependencies |
+|---------|---------|-------------|
+| **LakeIO.Core** | JSON, CSV, File, Batch, Directory operations, streaming infrastructure | Azure.Storage.Files.DataLake, CsvHelper |
+| **LakeIO.Parquet** | Parquet read/write with schema evolution and NDJSON compaction | LakeIO.Core, Parquet.Net |
+| **LakeIO.Telemetry** | OpenTelemetry builder extensions, cost estimation | LakeIO.Core, OpenTelemetry.Api |
+| **LakeIO.DependencyInjection** | `AddLakeIO()` and `AddLakeIOTelemetry()` ServiceCollection extensions | LakeIO.Core, LakeIO.Telemetry |
+
+## Requirements
+
+- .NET 10.0 or later
+- Azure Data Lake Storage Gen2 account
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Author
-
-Hamza Abdagic
-
-## Acknowledgments
-
-- Built on [Azure.Storage.Files.DataLake](https://github.com/Azure/azure-sdk-for-net)
-- JSON support via System.Text.Json
-- Parquet support via [Parquet.Net](https://github.com/aloneguid/parquet-dotnet)
-- CSV support via [CsvHelper](https://joshclose.github.io/CsvHelper/)
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
