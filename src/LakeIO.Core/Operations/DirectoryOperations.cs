@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Azure.Storage.Files.DataLake;
 using Azure.Storage.Files.DataLake.Models;
@@ -54,17 +55,52 @@ public class DirectoryOperations
         GetPathsOptions? options = null,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        var path = options?.Path;
-        var recursive = options?.Recursive ?? false;
-        var predicate = options?.Filter?.Build();
+        using var activity = LakeIOActivitySource.Source.StartActivity("directory.list");
+        activity?.SetTag("lakeio.filesystem", _fileSystemClient!.Name);
+        activity?.SetTag("lakeio.path", options?.Path);
+        activity?.SetTag("lakeio.operation", "directory.list");
 
-        await foreach (var azureItem in _fileSystemClient!.GetPathsAsync(path, recursive, false, cancellationToken).ConfigureAwait(false))
+        var startTimestamp = Stopwatch.GetTimestamp();
+        var success = false;
+        try
         {
-            var item = PathItem.FromAzure(azureItem);
+            var path = options?.Path;
+            var recursive = options?.Recursive ?? false;
+            var predicate = options?.Filter?.Build();
 
-            if (predicate is null || predicate(item))
+            await foreach (var azureItem in _fileSystemClient!.GetPathsAsync(path, recursive, false, cancellationToken).ConfigureAwait(false))
             {
-                yield return item;
+                var item = PathItem.FromAzure(azureItem);
+
+                if (predicate is null || predicate(item))
+                {
+                    yield return item;
+                }
+            }
+
+            success = true;
+        }
+        finally
+        {
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            if (success)
+            {
+                LakeIOMetrics.OperationsTotal.Add(1,
+                    new KeyValuePair<string, object?>("operation_type", "directory.list"));
+                LakeIOMetrics.OperationDuration.Record(elapsed,
+                    new KeyValuePair<string, object?>("operation_type", "directory.list"));
+                activity?.SetStatus(ActivityStatusCode.Ok);
+            }
+            else
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, "Operation failed");
+                activity?.SetTag("lakeio.error", true);
+                LakeIOMetrics.OperationsTotal.Add(1,
+                    new KeyValuePair<string, object?>("operation_type", "directory.list"),
+                    new KeyValuePair<string, object?>("error", "true"));
+                LakeIOMetrics.OperationDuration.Record(elapsed,
+                    new KeyValuePair<string, object?>("operation_type", "directory.list"),
+                    new KeyValuePair<string, object?>("error", "true"));
             }
         }
     }
@@ -87,14 +123,43 @@ public class DirectoryOperations
         GetPathsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        long count = 0;
+        using var activity = LakeIOActivitySource.Source.StartActivity("directory.count");
+        activity?.SetTag("lakeio.filesystem", _fileSystemClient!.Name);
+        activity?.SetTag("lakeio.path", options?.Path);
+        activity?.SetTag("lakeio.operation", "directory.count");
 
-        await foreach (var _ in GetPathsAsync(options, cancellationToken).ConfigureAwait(false))
+        var startTimestamp = Stopwatch.GetTimestamp();
+        try
         {
-            count++;
-        }
+            long count = 0;
 
-        return count;
+            await foreach (var _ in GetPathsAsync(options, cancellationToken).ConfigureAwait(false))
+            {
+                count++;
+            }
+
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "directory.count"));
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "directory.count"));
+
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return count;
+        }
+        catch (Exception ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("lakeio.error", true);
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "directory.count"),
+                new KeyValuePair<string, object?>("error", "true"));
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "directory.count"),
+                new KeyValuePair<string, object?>("error", "true"));
+            throw;
+        }
     }
 
     /// <summary>
@@ -112,12 +177,43 @@ public class DirectoryOperations
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
-        var fileClient = _fileSystemClient!.GetFileClient(path);
+        using var activity = LakeIOActivitySource.Source.StartActivity("directory.get_properties");
+        activity?.SetTag("lakeio.filesystem", _fileSystemClient!.Name);
+        activity?.SetTag("lakeio.path", path);
+        activity?.SetTag("lakeio.operation", "directory.get_properties");
 
-        var response = await fileClient.GetPropertiesAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        var startTimestamp = Stopwatch.GetTimestamp();
+        try
+        {
+            var fileClient = _fileSystemClient!.GetFileClient(path);
 
-        var properties = FileProperties.FromAzure(response.Value);
+            var response = await fileClient.GetPropertiesAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        return new Response<FileProperties>(properties, response.GetRawResponse());
+            var properties = FileProperties.FromAzure(response.Value);
+
+            var result = new Response<FileProperties>(properties, response.GetRawResponse());
+
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "directory.get_properties"));
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "directory.get_properties"));
+
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("lakeio.error", true);
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "directory.get_properties"),
+                new KeyValuePair<string, object?>("error", "true"));
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "directory.get_properties"),
+                new KeyValuePair<string, object?>("error", "true"));
+            throw;
+        }
     }
 }

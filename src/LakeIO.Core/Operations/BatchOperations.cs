@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Azure;
 using Azure.Storage.Files.DataLake;
 using Azure.Storage.Files.DataLake.Models;
@@ -53,53 +54,85 @@ public class BatchOperations
     {
         ArgumentNullException.ThrowIfNull(paths);
 
-        var pathList = paths as IReadOnlyList<string> ?? paths.ToList();
-        var count = pathList.Count;
-        var items = new List<BatchItemResult>(count);
-        var succeeded = 0;
-        var failed = 0;
+        using var activity = LakeIOActivitySource.Source.StartActivity("batch.delete");
+        activity?.SetTag("lakeio.filesystem", _fileSystemClient!.Name);
+        activity?.SetTag("lakeio.operation", "batch.delete");
 
-        for (var i = 0; i < count; i++)
+        var startTimestamp = Stopwatch.GetTimestamp();
+        try
         {
-            var path = pathList[i];
-            cancellationToken.ThrowIfCancellationRequested();
+            var pathList = paths as IReadOnlyList<string> ?? paths.ToList();
+            var count = pathList.Count;
+            activity?.SetTag("lakeio.batch.count", count);
 
-            try
-            {
-                await _fileSystemClient!.GetFileClient(path)
-                    .DeleteAsync(cancellationToken: cancellationToken)
-                    .ConfigureAwait(false);
+            var items = new List<BatchItemResult>(count);
+            var succeeded = 0;
+            var failed = 0;
 
-                items.Add(new BatchItemResult { Path = path, Succeeded = true });
-                succeeded++;
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            for (var i = 0; i < count; i++)
             {
-                items.Add(new BatchItemResult
+                var path = pathList[i];
+                cancellationToken.ThrowIfCancellationRequested();
+
+                try
                 {
-                    Path = path,
-                    Succeeded = false,
-                    Error = ex.Message,
-                    Exception = ex
+                    await _fileSystemClient!.GetFileClient(path)
+                        .DeleteAsync(cancellationToken: cancellationToken)
+                        .ConfigureAwait(false);
+
+                    items.Add(new BatchItemResult { Path = path, Succeeded = true });
+                    succeeded++;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    items.Add(new BatchItemResult
+                    {
+                        Path = path,
+                        Succeeded = false,
+                        Error = ex.Message,
+                        Exception = ex
+                    });
+                    failed++;
+                }
+
+                progress?.Report(new BatchProgress
+                {
+                    Completed = i + 1,
+                    Total = count,
+                    CurrentPath = path
                 });
-                failed++;
             }
 
-            progress?.Report(new BatchProgress
+            var result = new BatchResult
             {
-                Completed = i + 1,
-                Total = count,
-                CurrentPath = path
-            });
-        }
+                TotalCount = count,
+                SucceededCount = succeeded,
+                FailedCount = failed,
+                Items = items
+            };
 
-        return new BatchResult
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "batch.delete"));
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "batch.delete"));
+
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return result;
+        }
+        catch (Exception ex)
         {
-            TotalCount = count,
-            SucceededCount = succeeded,
-            FailedCount = failed,
-            Items = items
-        };
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("lakeio.error", true);
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "batch.delete"),
+                new KeyValuePair<string, object?>("error", "true"));
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "batch.delete"),
+                new KeyValuePair<string, object?>("error", "true"));
+            throw;
+        }
     }
 
     /// <summary>
@@ -116,62 +149,94 @@ public class BatchOperations
     {
         ArgumentNullException.ThrowIfNull(items);
 
-        var itemList = items as IReadOnlyList<BatchMoveItem> ?? items.ToList();
-        var count = itemList.Count;
-        var results = new List<BatchItemResult>(count);
-        var succeeded = 0;
-        var failed = 0;
+        using var activity = LakeIOActivitySource.Source.StartActivity("batch.move");
+        activity?.SetTag("lakeio.filesystem", _fileSystemClient!.Name);
+        activity?.SetTag("lakeio.operation", "batch.move");
 
-        for (var i = 0; i < count; i++)
+        var startTimestamp = Stopwatch.GetTimestamp();
+        try
         {
-            var item = itemList[i];
-            cancellationToken.ThrowIfCancellationRequested();
+            var itemList = items as IReadOnlyList<BatchMoveItem> ?? items.ToList();
+            var count = itemList.Count;
+            activity?.SetTag("lakeio.batch.count", count);
 
-            try
+            var results = new List<BatchItemResult>(count);
+            var succeeded = 0;
+            var failed = 0;
+
+            for (var i = 0; i < count; i++)
             {
-                var fileClient = _fileSystemClient!.GetFileClient(item.SourcePath);
+                var item = itemList[i];
+                cancellationToken.ThrowIfCancellationRequested();
 
-                DataLakeRequestConditions? destConditions = null;
-                if (!item.Overwrite)
+                try
                 {
-                    destConditions = new DataLakeRequestConditions { IfNoneMatch = new ETag("*") };
+                    var fileClient = _fileSystemClient!.GetFileClient(item.SourcePath);
+
+                    DataLakeRequestConditions? destConditions = null;
+                    if (!item.Overwrite)
+                    {
+                        destConditions = new DataLakeRequestConditions { IfNoneMatch = new ETag("*") };
+                    }
+
+                    await fileClient.RenameAsync(
+                        item.DestinationPath,
+                        destinationConditions: destConditions,
+                        cancellationToken: cancellationToken).ConfigureAwait(false);
+
+                    results.Add(new BatchItemResult { Path = item.SourcePath, Succeeded = true });
+                    succeeded++;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    results.Add(new BatchItemResult
+                    {
+                        Path = item.SourcePath,
+                        Succeeded = false,
+                        Error = ex.Message,
+                        Exception = ex
+                    });
+                    failed++;
                 }
 
-                await fileClient.RenameAsync(
-                    item.DestinationPath,
-                    destinationConditions: destConditions,
-                    cancellationToken: cancellationToken).ConfigureAwait(false);
-
-                results.Add(new BatchItemResult { Path = item.SourcePath, Succeeded = true });
-                succeeded++;
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                results.Add(new BatchItemResult
+                progress?.Report(new BatchProgress
                 {
-                    Path = item.SourcePath,
-                    Succeeded = false,
-                    Error = ex.Message,
-                    Exception = ex
+                    Completed = i + 1,
+                    Total = count,
+                    CurrentPath = item.SourcePath
                 });
-                failed++;
             }
 
-            progress?.Report(new BatchProgress
+            var result = new BatchResult
             {
-                Completed = i + 1,
-                Total = count,
-                CurrentPath = item.SourcePath
-            });
-        }
+                TotalCount = count,
+                SucceededCount = succeeded,
+                FailedCount = failed,
+                Items = results
+            };
 
-        return new BatchResult
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "batch.move"));
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "batch.move"));
+
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return result;
+        }
+        catch (Exception ex)
         {
-            TotalCount = count,
-            SucceededCount = succeeded,
-            FailedCount = failed,
-            Items = results
-        };
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("lakeio.error", true);
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "batch.move"),
+                new KeyValuePair<string, object?>("error", "true"));
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "batch.move"),
+                new KeyValuePair<string, object?>("error", "true"));
+            throw;
+        }
     }
 
     /// <summary>
@@ -188,52 +253,84 @@ public class BatchOperations
     {
         ArgumentNullException.ThrowIfNull(items);
 
-        var itemList = items as IReadOnlyList<BatchCopyItem> ?? items.ToList();
-        var count = itemList.Count;
-        var results = new List<BatchItemResult>(count);
-        var succeeded = 0;
-        var failed = 0;
+        using var activity = LakeIOActivitySource.Source.StartActivity("batch.copy");
+        activity?.SetTag("lakeio.filesystem", _fileSystemClient!.Name);
+        activity?.SetTag("lakeio.operation", "batch.copy");
 
-        for (var i = 0; i < count; i++)
+        var startTimestamp = Stopwatch.GetTimestamp();
+        try
         {
-            var item = itemList[i];
-            cancellationToken.ThrowIfCancellationRequested();
+            var itemList = items as IReadOnlyList<BatchCopyItem> ?? items.ToList();
+            var count = itemList.Count;
+            activity?.SetTag("lakeio.batch.count", count);
 
-            try
-            {
-                await CopyFileAsync(item.SourcePath, item.DestinationPath, item.Overwrite, cancellationToken)
-                    .ConfigureAwait(false);
+            var results = new List<BatchItemResult>(count);
+            var succeeded = 0;
+            var failed = 0;
 
-                results.Add(new BatchItemResult { Path = item.SourcePath, Succeeded = true });
-                succeeded++;
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            for (var i = 0; i < count; i++)
             {
-                results.Add(new BatchItemResult
+                var item = itemList[i];
+                cancellationToken.ThrowIfCancellationRequested();
+
+                try
                 {
-                    Path = item.SourcePath,
-                    Succeeded = false,
-                    Error = ex.Message,
-                    Exception = ex
+                    await CopyFileAsync(item.SourcePath, item.DestinationPath, item.Overwrite, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    results.Add(new BatchItemResult { Path = item.SourcePath, Succeeded = true });
+                    succeeded++;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    results.Add(new BatchItemResult
+                    {
+                        Path = item.SourcePath,
+                        Succeeded = false,
+                        Error = ex.Message,
+                        Exception = ex
+                    });
+                    failed++;
+                }
+
+                progress?.Report(new BatchProgress
+                {
+                    Completed = i + 1,
+                    Total = count,
+                    CurrentPath = item.SourcePath
                 });
-                failed++;
             }
 
-            progress?.Report(new BatchProgress
+            var result = new BatchResult
             {
-                Completed = i + 1,
-                Total = count,
-                CurrentPath = item.SourcePath
-            });
-        }
+                TotalCount = count,
+                SucceededCount = succeeded,
+                FailedCount = failed,
+                Items = results
+            };
 
-        return new BatchResult
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "batch.copy"));
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "batch.copy"));
+
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return result;
+        }
+        catch (Exception ex)
         {
-            TotalCount = count,
-            SucceededCount = succeeded,
-            FailedCount = failed,
-            Items = results
-        };
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("lakeio.error", true);
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "batch.copy"),
+                new KeyValuePair<string, object?>("error", "true"));
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "batch.copy"),
+                new KeyValuePair<string, object?>("error", "true"));
+            throw;
+        }
     }
 
     private async Task CopyFileAsync(

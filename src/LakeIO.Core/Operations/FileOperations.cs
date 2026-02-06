@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Azure;
 using Azure.Storage.Files.DataLake;
 using Azure.Storage.Files.DataLake.Models;
@@ -56,31 +57,68 @@ public class FileOperations
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         ArgumentNullException.ThrowIfNull(content);
 
-        var fileClient = _fileSystemClient!.GetFileClient(path);
+        using var activity = LakeIOActivitySource.Source.StartActivity("file.upload");
+        activity?.SetTag("lakeio.filesystem", _fileSystemClient!.Name);
+        activity?.SetTag("lakeio.path", path);
+        activity?.SetTag("lakeio.operation", "file.upload");
 
-        var uploadOptions = new DataLakeFileUploadOptions();
-
-        if (contentType is not null)
+        var startTimestamp = Stopwatch.GetTimestamp();
+        try
         {
-            uploadOptions.HttpHeaders = new PathHttpHeaders { ContentType = contentType };
-        }
+            var fileClient = _fileSystemClient!.GetFileClient(path);
 
-        if (!overwrite)
-        {
-            uploadOptions.Conditions = new DataLakeRequestConditions { IfNoneMatch = new ETag("*") };
-        }
+            var uploadOptions = new DataLakeFileUploadOptions();
 
-        var response = await fileClient.UploadAsync(content, uploadOptions, cancellationToken).ConfigureAwait(false);
-
-        return new Response<StorageResult>(
-            new StorageResult
+            if (contentType is not null)
             {
-                Path = fileClient.Path,
-                ETag = response.Value.ETag,
-                LastModified = response.Value.LastModified,
-                ContentLength = content.CanSeek ? content.Length : null
-            },
-            response.GetRawResponse());
+                uploadOptions.HttpHeaders = new PathHttpHeaders { ContentType = contentType };
+            }
+
+            if (!overwrite)
+            {
+                uploadOptions.Conditions = new DataLakeRequestConditions { IfNoneMatch = new ETag("*") };
+            }
+
+            var response = await fileClient.UploadAsync(content, uploadOptions, cancellationToken).ConfigureAwait(false);
+
+            var result = new Response<StorageResult>(
+                new StorageResult
+                {
+                    Path = fileClient.Path,
+                    ETag = response.Value.ETag,
+                    LastModified = response.Value.LastModified,
+                    ContentLength = content.CanSeek ? content.Length : null
+                },
+                response.GetRawResponse());
+
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "file.upload"));
+            if (content.CanSeek)
+            {
+                LakeIOMetrics.BytesTransferred.Add(content.Length,
+                    new KeyValuePair<string, object?>("direction", "write"));
+                activity?.SetTag("lakeio.bytes", content.Length);
+            }
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "file.upload"));
+
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("lakeio.error", true);
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "file.upload"),
+                new KeyValuePair<string, object?>("error", "true"));
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "file.upload"),
+                new KeyValuePair<string, object?>("error", "true"));
+            throw;
+        }
     }
 
     /// <summary>
@@ -95,11 +133,46 @@ public class FileOperations
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
-        var fileClient = _fileSystemClient!.GetFileClient(path);
+        using var activity = LakeIOActivitySource.Source.StartActivity("file.download");
+        activity?.SetTag("lakeio.filesystem", _fileSystemClient!.Name);
+        activity?.SetTag("lakeio.path", path);
+        activity?.SetTag("lakeio.operation", "file.download");
 
-        var downloadInfo = await fileClient.ReadContentAsync(cancellationToken).ConfigureAwait(false);
+        var startTimestamp = Stopwatch.GetTimestamp();
+        try
+        {
+            var fileClient = _fileSystemClient!.GetFileClient(path);
 
-        return new Response<BinaryData>(downloadInfo.Value.Content, downloadInfo.GetRawResponse());
+            var downloadInfo = await fileClient.ReadContentAsync(cancellationToken).ConfigureAwait(false);
+
+            var result = new Response<BinaryData>(downloadInfo.Value.Content, downloadInfo.GetRawResponse());
+
+            var bytesRead = downloadInfo.Value.Content.ToMemory().Length;
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "file.download"));
+            LakeIOMetrics.BytesTransferred.Add(bytesRead,
+                new KeyValuePair<string, object?>("direction", "read"));
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "file.download"));
+
+            activity?.SetTag("lakeio.bytes", bytesRead);
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("lakeio.error", true);
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "file.download"),
+                new KeyValuePair<string, object?>("error", "true"));
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "file.download"),
+                new KeyValuePair<string, object?>("error", "true"));
+            throw;
+        }
     }
 
     /// <summary>
@@ -114,11 +187,42 @@ public class FileOperations
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
-        var fileClient = _fileSystemClient!.GetFileClient(path);
+        using var activity = LakeIOActivitySource.Source.StartActivity("file.download_stream");
+        activity?.SetTag("lakeio.filesystem", _fileSystemClient!.Name);
+        activity?.SetTag("lakeio.path", path);
+        activity?.SetTag("lakeio.operation", "file.download_stream");
 
-        var downloadInfo = await fileClient.ReadStreamingAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        var startTimestamp = Stopwatch.GetTimestamp();
+        try
+        {
+            var fileClient = _fileSystemClient!.GetFileClient(path);
 
-        return new Response<Stream>(downloadInfo.Value.Content, downloadInfo.GetRawResponse());
+            var downloadInfo = await fileClient.ReadStreamingAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            var result = new Response<Stream>(downloadInfo.Value.Content, downloadInfo.GetRawResponse());
+
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "file.download_stream"));
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "file.download_stream"));
+
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("lakeio.error", true);
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "file.download_stream"),
+                new KeyValuePair<string, object?>("error", "true"));
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "file.download_stream"),
+                new KeyValuePair<string, object?>("error", "true"));
+            throw;
+        }
     }
 
     /// <summary>
@@ -132,9 +236,39 @@ public class FileOperations
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
-        var fileClient = _fileSystemClient!.GetFileClient(path);
+        using var activity = LakeIOActivitySource.Source.StartActivity("file.delete");
+        activity?.SetTag("lakeio.filesystem", _fileSystemClient!.Name);
+        activity?.SetTag("lakeio.path", path);
+        activity?.SetTag("lakeio.operation", "file.delete");
 
-        await fileClient.DeleteAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        var startTimestamp = Stopwatch.GetTimestamp();
+        try
+        {
+            var fileClient = _fileSystemClient!.GetFileClient(path);
+
+            await fileClient.DeleteAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "file.delete"));
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "file.delete"));
+
+            activity?.SetStatus(ActivityStatusCode.Ok);
+        }
+        catch (Exception ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("lakeio.error", true);
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "file.delete"),
+                new KeyValuePair<string, object?>("error", "true"));
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "file.delete"),
+                new KeyValuePair<string, object?>("error", "true"));
+            throw;
+        }
     }
 
     /// <summary>
@@ -149,11 +283,42 @@ public class FileOperations
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
-        var fileClient = _fileSystemClient!.GetFileClient(path);
+        using var activity = LakeIOActivitySource.Source.StartActivity("file.exists");
+        activity?.SetTag("lakeio.filesystem", _fileSystemClient!.Name);
+        activity?.SetTag("lakeio.path", path);
+        activity?.SetTag("lakeio.operation", "file.exists");
 
-        var response = await fileClient.ExistsAsync(cancellationToken).ConfigureAwait(false);
+        var startTimestamp = Stopwatch.GetTimestamp();
+        try
+        {
+            var fileClient = _fileSystemClient!.GetFileClient(path);
 
-        return new Response<bool>(response.Value, response.GetRawResponse());
+            var response = await fileClient.ExistsAsync(cancellationToken).ConfigureAwait(false);
+
+            var result = new Response<bool>(response.Value, response.GetRawResponse());
+
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "file.exists"));
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "file.exists"));
+
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("lakeio.error", true);
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "file.exists"),
+                new KeyValuePair<string, object?>("error", "true"));
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "file.exists"),
+                new KeyValuePair<string, object?>("error", "true"));
+            throw;
+        }
     }
 
     /// <summary>
@@ -168,11 +333,42 @@ public class FileOperations
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
-        var fileClient = _fileSystemClient!.GetFileClient(path);
+        using var activity = LakeIOActivitySource.Source.StartActivity("file.get_properties");
+        activity?.SetTag("lakeio.filesystem", _fileSystemClient!.Name);
+        activity?.SetTag("lakeio.path", path);
+        activity?.SetTag("lakeio.operation", "file.get_properties");
 
-        var response = await fileClient.GetPropertiesAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        var startTimestamp = Stopwatch.GetTimestamp();
+        try
+        {
+            var fileClient = _fileSystemClient!.GetFileClient(path);
 
-        return new Response<PathProperties>(response.Value, response.GetRawResponse());
+            var response = await fileClient.GetPropertiesAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            var result = new Response<PathProperties>(response.Value, response.GetRawResponse());
+
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "file.get_properties"));
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "file.get_properties"));
+
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("lakeio.error", true);
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "file.get_properties"),
+                new KeyValuePair<string, object?>("error", "true"));
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "file.get_properties"),
+                new KeyValuePair<string, object?>("error", "true"));
+            throw;
+        }
     }
 
     /// <summary>
@@ -192,27 +388,59 @@ public class FileOperations
         ArgumentException.ThrowIfNullOrWhiteSpace(sourcePath);
         ArgumentException.ThrowIfNullOrWhiteSpace(destinationPath);
 
-        var fileClient = _fileSystemClient!.GetFileClient(sourcePath);
+        using var activity = LakeIOActivitySource.Source.StartActivity("file.move");
+        activity?.SetTag("lakeio.filesystem", _fileSystemClient!.Name);
+        activity?.SetTag("lakeio.path", sourcePath);
+        activity?.SetTag("lakeio.destination_path", destinationPath);
+        activity?.SetTag("lakeio.operation", "file.move");
 
-        DataLakeRequestConditions? destConditions = null;
-        if (!overwrite)
+        var startTimestamp = Stopwatch.GetTimestamp();
+        try
         {
-            destConditions = new DataLakeRequestConditions { IfNoneMatch = new ETag("*") };
-        }
+            var fileClient = _fileSystemClient!.GetFileClient(sourcePath);
 
-        var response = await fileClient.RenameAsync(
-            destinationPath,
-            destinationConditions: destConditions,
-            cancellationToken: cancellationToken).ConfigureAwait(false);
-
-        return new Response<StorageResult>(
-            new StorageResult
+            DataLakeRequestConditions? destConditions = null;
+            if (!overwrite)
             {
-                Path = response.Value.Path,
-                ETag = null,
-                LastModified = null,
-                ContentLength = null
-            },
-            response.GetRawResponse());
+                destConditions = new DataLakeRequestConditions { IfNoneMatch = new ETag("*") };
+            }
+
+            var response = await fileClient.RenameAsync(
+                destinationPath,
+                destinationConditions: destConditions,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            var result = new Response<StorageResult>(
+                new StorageResult
+                {
+                    Path = response.Value.Path,
+                    ETag = null,
+                    LastModified = null,
+                    ContentLength = null
+                },
+                response.GetRawResponse());
+
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "file.move"));
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "file.move"));
+
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("lakeio.error", true);
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "file.move"),
+                new KeyValuePair<string, object?>("error", "true"));
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "file.move"),
+                new KeyValuePair<string, object?>("error", "true"));
+            throw;
+        }
     }
 }
