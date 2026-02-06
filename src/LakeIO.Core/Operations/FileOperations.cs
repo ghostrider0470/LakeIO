@@ -6,7 +6,7 @@ using Azure.Storage.Files.DataLake.Models;
 namespace LakeIO;
 
 /// <summary>
-/// Provides raw file operations (upload, download, delete, exists, properties, move)
+/// Provides raw file operations (upload, download, delete, exists, properties, move, copy)
 /// for Azure Data Lake Storage.
 /// </summary>
 /// <remarks>
@@ -449,6 +449,267 @@ public class FileOperations
             var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
             LakeIOMetrics.OperationDuration.Record(elapsed,
                 new KeyValuePair<string, object?>("operation_type", "file.move"),
+                new KeyValuePair<string, object?>("error", "true"));
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Downloads a byte range of a file as <see cref="BinaryData"/>, without downloading the entire file.
+    /// </summary>
+    /// <param name="path">The file path within the file system.</param>
+    /// <param name="offset">The byte offset to start reading from.</param>
+    /// <param name="length">The number of bytes to read.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A <see cref="Response{T}"/> containing the requested byte range as <see cref="BinaryData"/>.</returns>
+    /// <remarks>
+    /// This is a read operation and is NOT wrapped in application-level retry.
+    /// The Azure SDK transport layer handles transient retries for reads.
+    /// </remarks>
+    public virtual async Task<Response<BinaryData>> DownloadRangeAsync(
+        string path,
+        long offset,
+        long length,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+
+        using var activity = LakeIOActivitySource.Source.StartActivity("file.download_range");
+        activity?.SetTag("lakeio.filesystem", _fileSystemClient!.Name);
+        activity?.SetTag("lakeio.path", path);
+        activity?.SetTag("lakeio.operation", "file.download_range");
+        activity?.SetTag("lakeio.offset", offset);
+        activity?.SetTag("lakeio.length", length);
+
+        var startTimestamp = Stopwatch.GetTimestamp();
+        try
+        {
+            var fileClient = _fileSystemClient!.GetFileClient(path);
+
+            var readOptions = new DataLakeFileReadOptions { Range = new HttpRange(offset, length) };
+
+            var downloadInfo = await fileClient.ReadContentAsync(readOptions, cancellationToken).ConfigureAwait(false);
+
+            var result = new Response<BinaryData>(downloadInfo.Value.Content, downloadInfo.GetRawResponse());
+
+            var bytesRead = downloadInfo.Value.Content.ToMemory().Length;
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "file.download_range"));
+            LakeIOMetrics.BytesTransferred.Add(bytesRead,
+                new KeyValuePair<string, object?>("direction", "read"));
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "file.download_range"));
+
+            activity?.SetTag("lakeio.bytes", bytesRead);
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("lakeio.error", true);
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "file.download_range"),
+                new KeyValuePair<string, object?>("error", "true"));
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "file.download_range"),
+                new KeyValuePair<string, object?>("error", "true"));
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Copies a file within the same container using a download-then-upload pattern.
+    /// </summary>
+    /// <param name="sourcePath">The source file path.</param>
+    /// <param name="destinationPath">The destination file path within the same container.</param>
+    /// <param name="overwrite">Whether to overwrite an existing file at the destination. Default is <see langword="false"/>.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A <see cref="Response{T}"/> containing the <see cref="StorageResult"/> with the destination path.</returns>
+    /// <remarks>
+    /// <para>The download (read) step is NOT retry-wrapped. The upload (mutation) step IS retry-wrapped.</para>
+    /// <para>This operation is not atomic: if the upload fails after a partial write, the destination
+    /// file may be left in an inconsistent state.</para>
+    /// </remarks>
+    public virtual async Task<Response<StorageResult>> CopyAsync(
+        string sourcePath,
+        string destinationPath,
+        bool overwrite = false,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourcePath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(destinationPath);
+
+        using var activity = LakeIOActivitySource.Source.StartActivity("file.copy");
+        activity?.SetTag("lakeio.filesystem", _fileSystemClient!.Name);
+        activity?.SetTag("lakeio.path", sourcePath);
+        activity?.SetTag("lakeio.destination_path", destinationPath);
+        activity?.SetTag("lakeio.operation", "file.copy");
+
+        var startTimestamp = Stopwatch.GetTimestamp();
+        try
+        {
+            var sourceFileClient = _fileSystemClient!.GetFileClient(sourcePath);
+
+            var downloadResult = await sourceFileClient
+                .ReadStreamingAsync(cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+
+            await using var content = downloadResult.Value.Content;
+
+            var destFileClient = _fileSystemClient.GetFileClient(destinationPath);
+
+            var uploadOptions = new DataLakeFileUploadOptions();
+            if (!overwrite)
+            {
+                uploadOptions.Conditions = new DataLakeRequestConditions { IfNoneMatch = new ETag("*") };
+            }
+
+            var uploadResponse = await _options!.RetryHelper.ExecuteAsync(async ct =>
+            {
+                if (content.CanSeek) content.Position = 0;
+                return await destFileClient.UploadAsync(content, uploadOptions, ct).ConfigureAwait(false);
+            }, cancellationToken).ConfigureAwait(false);
+
+            var result = new Response<StorageResult>(
+                new StorageResult
+                {
+                    Path = destFileClient.Path,
+                    ETag = uploadResponse.Value.ETag,
+                    LastModified = uploadResponse.Value.LastModified,
+                    ContentLength = content.CanSeek ? content.Length : null
+                },
+                uploadResponse.GetRawResponse());
+
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "file.copy"));
+            if (content.CanSeek)
+            {
+                LakeIOMetrics.BytesTransferred.Add(content.Length,
+                    new KeyValuePair<string, object?>("direction", "write"));
+                activity?.SetTag("lakeio.bytes", content.Length);
+            }
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "file.copy"));
+
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("lakeio.error", true);
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "file.copy"),
+                new KeyValuePair<string, object?>("error", "true"));
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "file.copy"),
+                new KeyValuePair<string, object?>("error", "true"));
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Copies a file to a different file system (cross-container copy) using a download-then-upload pattern.
+    /// </summary>
+    /// <param name="sourcePath">The source file path within the current file system.</param>
+    /// <param name="targetFileSystem">The target <see cref="FileSystemClient"/> to copy to.</param>
+    /// <param name="targetPath">The destination file path within the target file system.</param>
+    /// <param name="deleteSource">Whether to delete the source file after a successful copy (move semantics). Default is <see langword="false"/>.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A <see cref="Response{T}"/> containing the <see cref="StorageResult"/> with the target path.</returns>
+    /// <remarks>
+    /// <para>The download (read) step is NOT retry-wrapped. The upload and optional delete (mutations) are retry-wrapped.</para>
+    /// <para>This operation is not atomic. If <paramref name="deleteSource"/> is <see langword="true"/> and the
+    /// delete fails after a successful copy, the file will exist in both locations. The response is returned
+    /// before the delete attempt, so callers know the copy succeeded.</para>
+    /// <para>The target file is always overwritten (cross-container copies are intentional operations).</para>
+    /// </remarks>
+    public virtual async Task<Response<StorageResult>> CopyToAsync(
+        string sourcePath,
+        FileSystemClient targetFileSystem,
+        string targetPath,
+        bool deleteSource = false,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourcePath);
+        ArgumentNullException.ThrowIfNull(targetFileSystem);
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetPath);
+
+        using var activity = LakeIOActivitySource.Source.StartActivity("file.copy_to");
+        activity?.SetTag("lakeio.filesystem", _fileSystemClient!.Name);
+        activity?.SetTag("lakeio.path", sourcePath);
+        activity?.SetTag("lakeio.target_filesystem", targetFileSystem.Name);
+        activity?.SetTag("lakeio.target_path", targetPath);
+        activity?.SetTag("lakeio.operation", "file.copy_to");
+
+        var startTimestamp = Stopwatch.GetTimestamp();
+        try
+        {
+            var sourceFileClient = _fileSystemClient!.GetFileClient(sourcePath);
+
+            var downloadResult = await sourceFileClient
+                .ReadStreamingAsync(cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+
+            await using var content = downloadResult.Value.Content;
+
+            var destFileClient = targetFileSystem.AzureClient.GetFileClient(targetPath);
+
+            var uploadResponse = await _options!.RetryHelper.ExecuteAsync(async ct =>
+            {
+                if (content.CanSeek) content.Position = 0;
+                return await destFileClient.UploadAsync(content, new DataLakeFileUploadOptions(), ct).ConfigureAwait(false);
+            }, cancellationToken).ConfigureAwait(false);
+
+            var result = new Response<StorageResult>(
+                new StorageResult
+                {
+                    Path = destFileClient.Path,
+                    ETag = uploadResponse.Value.ETag,
+                    LastModified = uploadResponse.Value.LastModified,
+                    ContentLength = content.CanSeek ? content.Length : null
+                },
+                uploadResponse.GetRawResponse());
+
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "file.copy_to"));
+            if (content.CanSeek)
+            {
+                LakeIOMetrics.BytesTransferred.Add(content.Length,
+                    new KeyValuePair<string, object?>("direction", "write"));
+                activity?.SetTag("lakeio.bytes", content.Length);
+            }
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "file.copy_to"));
+
+            activity?.SetStatus(ActivityStatusCode.Ok);
+
+            if (deleteSource)
+            {
+                await _options.RetryHelper.ExecuteAsync(async ct =>
+                {
+                    await sourceFileClient.DeleteAsync(cancellationToken: ct).ConfigureAwait(false);
+                }, cancellationToken).ConfigureAwait(false);
+            }
+
+            return result;
+        }
+        catch (Exception ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("lakeio.error", true);
+            LakeIOMetrics.OperationsTotal.Add(1,
+                new KeyValuePair<string, object?>("operation_type", "file.copy_to"),
+                new KeyValuePair<string, object?>("error", "true"));
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
+            LakeIOMetrics.OperationDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("operation_type", "file.copy_to"),
                 new KeyValuePair<string, object?>("error", "true"));
             throw;
         }
