@@ -85,7 +85,11 @@ public class JsonOperations
                 uploadOptions.Conditions = new DataLakeRequestConditions { IfNoneMatch = new ETag("*") };
             }
 
-            var response = await fileClient.UploadAsync(stream, uploadOptions, cancellationToken).ConfigureAwait(false);
+            var response = await _options!.RetryHelper.ExecuteAsync(async ct =>
+            {
+                stream.Position = 0;
+                return await fileClient.UploadAsync(stream, uploadOptions, ct).ConfigureAwait(false);
+            }, cancellationToken).ConfigureAwait(false);
 
             var result = new Response<StorageResult>(
                 new StorageResult
@@ -220,26 +224,28 @@ public class JsonOperations
                 await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
 
-            memoryStream.Position = 0;
-
-            // Get current file offset (or create the file if it doesn't exist)
-            long offset;
-            try
+            // Wrap entire GetProperties+Append+Flush sequence so offset is re-read on retry
+            long finalPosition = 0;
+            var flushResponse = await _options!.RetryHelper.ExecuteAsync(async ct =>
             {
-                var properties = await fileClient.GetPropertiesAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-                offset = properties.Value.ContentLength;
-            }
-            catch (RequestFailedException ex) when (ex.ErrorCode is "PathNotFound" or "BlobNotFound")
-            {
-                await fileClient.CreateIfNotExistsAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-                offset = 0;
-            }
+                // Re-read offset on each attempt (concurrent writers may change it)
+                long offset;
+                try
+                {
+                    var properties = await fileClient.GetPropertiesAsync(cancellationToken: ct).ConfigureAwait(false);
+                    offset = properties.Value.ContentLength;
+                }
+                catch (RequestFailedException ex) when (ex.ErrorCode is "PathNotFound" or "BlobNotFound")
+                {
+                    await fileClient.CreateIfNotExistsAsync(cancellationToken: ct).ConfigureAwait(false);
+                    offset = 0;
+                }
 
-            // Append data at the current offset
-            await fileClient.AppendAsync(memoryStream, offset, cancellationToken: cancellationToken).ConfigureAwait(false);
-
-            // Flush to commit the appended data
-            var flushResponse = await fileClient.FlushAsync(offset + memoryStream.Length, cancellationToken: cancellationToken).ConfigureAwait(false);
+                memoryStream.Position = 0;
+                await fileClient.AppendAsync(memoryStream, offset, cancellationToken: ct).ConfigureAwait(false);
+                finalPosition = offset + memoryStream.Length;
+                return await fileClient.FlushAsync(finalPosition, cancellationToken: ct).ConfigureAwait(false);
+            }, cancellationToken).ConfigureAwait(false);
 
             var result = new Response<StorageResult>(
                 new StorageResult
@@ -247,7 +253,7 @@ public class JsonOperations
                     Path = fileClient.Path,
                     ETag = flushResponse.Value.ETag,
                     LastModified = flushResponse.Value.LastModified,
-                    ContentLength = offset + memoryStream.Length
+                    ContentLength = finalPosition
                 },
                 flushResponse.GetRawResponse());
 

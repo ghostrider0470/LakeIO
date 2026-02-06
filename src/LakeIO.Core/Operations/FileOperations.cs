@@ -79,7 +79,11 @@ public class FileOperations
                 uploadOptions.Conditions = new DataLakeRequestConditions { IfNoneMatch = new ETag("*") };
             }
 
-            var response = await fileClient.UploadAsync(content, uploadOptions, cancellationToken).ConfigureAwait(false);
+            var response = await _options!.RetryHelper.ExecuteAsync(async ct =>
+            {
+                if (content.CanSeek) content.Position = 0;
+                return await fileClient.UploadAsync(content, uploadOptions, ct).ConfigureAwait(false);
+            }, cancellationToken).ConfigureAwait(false);
 
             var result = new Response<StorageResult>(
                 new StorageResult
@@ -246,7 +250,10 @@ public class FileOperations
         {
             var fileClient = _fileSystemClient!.GetFileClient(path);
 
-            await fileClient.DeleteAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            await _options!.RetryHelper.ExecuteAsync(async ct =>
+            {
+                await fileClient.DeleteAsync(cancellationToken: ct).ConfigureAwait(false);
+            }, cancellationToken).ConfigureAwait(false);
 
             var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
             LakeIOMetrics.OperationsTotal.Add(1,
@@ -405,10 +412,13 @@ public class FileOperations
                 destConditions = new DataLakeRequestConditions { IfNoneMatch = new ETag("*") };
             }
 
-            var response = await fileClient.RenameAsync(
-                destinationPath,
-                destinationConditions: destConditions,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+            var response = await _options!.RetryHelper.ExecuteAsync(async ct =>
+            {
+                return await fileClient.RenameAsync(
+                    destinationPath,
+                    destinationConditions: destConditions,
+                    cancellationToken: ct).ConfigureAwait(false);
+            }, cancellationToken).ConfigureAwait(false);
 
             var result = new Response<StorageResult>(
                 new StorageResult
