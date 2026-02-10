@@ -88,6 +88,13 @@ public class ParquetOperations
             await ParquetSerializer.SerializeAsync(items, memoryStream, serializerOptions, cancellationToken).ConfigureAwait(false);
             memoryStream.Position = 0;
 
+            if (memoryStream.Length < 12)
+            {
+                throw new InvalidOperationException(
+                    $"Parquet serialization produced {memoryStream.Length} bytes for '{path}'. " +
+                    "Minimum valid Parquet is 12 bytes (PAR1 header + footer).");
+            }
+
             var fileClient = _fileSystemClient!.GetFileClient(path);
             var uploadOptions = new DataLakeFileUploadOptions();
 
@@ -119,8 +126,10 @@ public class ParquetOperations
                     .ConfigureAwait(false);
                 if (!validation.IsValid)
                 {
+                    try { await fileClient.DeleteAsync(cancellationToken: cancellationToken).ConfigureAwait(false); }
+                    catch { /* best-effort cleanup */ }
                     throw new InvalidOperationException(
-                        $"Post-write validation failed for '{path}': {validation.ErrorReason}");
+                        $"Post-write validation failed for '{path}': {validation.ErrorReason}. File deleted.");
                 }
             }
 
@@ -203,6 +212,13 @@ public class ParquetOperations
             await ParquetSerializer.SerializeAsync(items, memoryStream, serializerOptions, cancellationToken).ConfigureAwait(false);
             memoryStream.Position = 0;
 
+            if (memoryStream.Length < 12)
+            {
+                throw new InvalidOperationException(
+                    $"Parquet serialization produced {memoryStream.Length} bytes for '{path}'. " +
+                    "Minimum valid Parquet is 12 bytes (PAR1 header + footer).");
+            }
+
             var fileClient = _fileSystemClient!.GetFileClient(path);
             var uploadOptions = new DataLakeFileUploadOptions();
 
@@ -234,8 +250,10 @@ public class ParquetOperations
                     .ConfigureAwait(false);
                 if (!validation.IsValid)
                 {
+                    try { await fileClient.DeleteAsync(cancellationToken: cancellationToken).ConfigureAwait(false); }
+                    catch { /* best-effort cleanup */ }
                     throw new InvalidOperationException(
-                        $"Post-write validation failed for '{path}': {validation.ErrorReason}");
+                        $"Post-write validation failed for '{path}': {validation.ErrorReason}. File deleted.");
                 }
             }
 
