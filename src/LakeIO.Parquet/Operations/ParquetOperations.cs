@@ -523,6 +523,13 @@ public class ParquetOperations
 
             await ParquetSerializer.SerializeAsync(items, fileStream, serializerOptions, cancellationToken).ConfigureAwait(false);
 
+            if (fileStream.Length < 12)
+            {
+                throw new InvalidOperationException(
+                    $"Parquet merge produced {fileStream.Length} bytes for '{path}'. " +
+                    "Minimum valid Parquet is 12 bytes (PAR1 header + footer).");
+            }
+
             // Upload the merged file
             var uploadOptions = new DataLakeFileUploadOptions();
 
@@ -541,6 +548,20 @@ public class ParquetOperations
                     ContentLength = fileStream.Length
                 },
                 response.GetRawResponse());
+
+            // Post-merge validation
+            if (options?.ValidateAfterWrite == true)
+            {
+                var validation = await ValidateAsync(path, ParquetValidationLevel.Quick, cancellationToken)
+                    .ConfigureAwait(false);
+                if (!validation.IsValid)
+                {
+                    try { await fileClient.DeleteAsync(cancellationToken: cancellationToken).ConfigureAwait(false); }
+                    catch { /* best-effort cleanup */ }
+                    throw new InvalidOperationException(
+                        $"Post-merge validation failed for '{path}': {validation.ErrorReason}. File deleted.");
+                }
+            }
 
             var elapsed = Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds;
             LakeIOMetrics.OperationsTotal.Add(1,

@@ -28,7 +28,7 @@ public class ParquetOptions
 
     /// <summary>
     /// When true, automatically runs Quick validation after write operations
-    /// (WriteAsync, WriteStreamAsync). Catches partial uploads.
+    /// (WriteAsync, WriteStreamAsync, MergeAsync). Catches partial uploads.
     /// Default: null (treated as false).
     /// </summary>
     public bool? ValidateAfterWrite { get; set; }
