@@ -77,12 +77,7 @@ public class ParquetOperations
         var startTimestamp = Stopwatch.GetTimestamp();
         try
         {
-            var (compression, rowGroupSize) = ResolveOptions(options);
-            var serializerOptions = new ParquetSerializerOptions
-            {
-                CompressionMethod = compression,
-                RowGroupSize = rowGroupSize
-            };
+            var serializerOptions = CreateSerializerOptions(options);
 
             using var memoryStream = StreamPool.Manager.GetStream("ParquetOperations.WriteAsync");
             await ParquetSerializer.SerializeAsync(items, memoryStream, serializerOptions, cancellationToken).ConfigureAwait(false);
@@ -201,12 +196,7 @@ public class ParquetOperations
         var startTimestamp = Stopwatch.GetTimestamp();
         try
         {
-            var (compression, rowGroupSize) = ResolveOptions(options);
-            var serializerOptions = new ParquetSerializerOptions
-            {
-                CompressionMethod = compression,
-                RowGroupSize = rowGroupSize
-            };
+            var serializerOptions = CreateSerializerOptions(options);
 
             using var memoryStream = StreamPool.Manager.GetStream("ParquetOperations.WriteStreamAsync");
             await ParquetSerializer.SerializeAsync(items, memoryStream, serializerOptions, cancellationToken).ConfigureAwait(false);
@@ -491,8 +481,6 @@ public class ParquetOperations
             }
 
             // File exists: download, evolve schema, append new row group, re-upload
-            var (compression, rowGroupSize) = ResolveOptions(options);
-
             // Read existing schema from file footer
             await using var downloadStream = await fileClient.OpenReadAsync(
                 new DataLakeOpenReadOptions(allowModifications: false), cancellationToken).ConfigureAwait(false);
@@ -514,12 +502,7 @@ public class ParquetOperations
             // Reset stream for append (Parquet.Net reads footer, appends row group, writes new footer)
             fileStream.Position = 0;
 
-            var serializerOptions = new ParquetSerializerOptions
-            {
-                CompressionMethod = compression,
-                RowGroupSize = rowGroupSize,
-                Append = true
-            };
+            var serializerOptions = CreateSerializerOptions(options, append: true);
 
             await ParquetSerializer.SerializeAsync(items, fileStream, serializerOptions, cancellationToken).ConfigureAwait(false);
 
@@ -841,5 +824,20 @@ public class ParquetOperations
             ?? _options!.DefaultParquetRowGroupSize;
 
         return (compression, rowGroupSize);
+    }
+
+    private ParquetSerializerOptions CreateSerializerOptions(ParquetOptions? options, bool append = false)
+    {
+        var (compression, rowGroupSize) = ResolveOptions(options);
+        return new ParquetSerializerOptions
+        {
+            CompressionMethod = compression,
+            RowGroupSize = rowGroupSize,
+            Append = append,
+            ParquetOptions = new global::Parquet.ParquetOptions
+            {
+                UseDeltaBinaryPackedEncoding = options?.UseDeltaBinaryPackedEncoding ?? false
+            }
+        };
     }
 }

@@ -32,4 +32,12 @@ public class ParquetOptions
     /// Default: null (treated as false).
     /// </summary>
     public bool? ValidateAfterWrite { get; set; }
+
+    /// <summary>
+    /// Uses DELTA_BINARY_PACKED encoding for INT32/INT64 columns.
+    /// Set to false if downstream readers (for example Fabric or older Spark runtimes)
+    /// do not support this encoding.
+    /// Default: false (maximum compatibility).
+    /// </summary>
+    public bool UseDeltaBinaryPackedEncoding { get; set; } = false;
 }

@@ -4,6 +4,7 @@ using Azure.Storage.Files.DataLake.Models;
 using FluentAssertions;
 using NSubstitute;
 using Parquet;
+using Parquet.Meta;
 using Parquet.Schema;
 using Parquet.Serialization;
 using Xunit;
@@ -65,6 +66,73 @@ public class ParquetOperationsTests
             Arg.Any<Stream>(),
             Arg.Any<DataLakeFileUploadOptions>(),
             Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task WriteAsync_DefaultEncoding_DoesNotUseDeltaBinaryPackedForIntColumns()
+    {
+        // Arrange
+        var uploaded = new MemoryStream();
+        var uploadResponse = CreateUploadResponse();
+        _mockFileClient.UploadAsync(
+                Arg.Do<Stream>(s =>
+                {
+                    uploaded.SetLength(0);
+                    s.Position = 0;
+                    s.CopyTo(uploaded);
+                    uploaded.Position = 0;
+                }),
+                Arg.Any<DataLakeFileUploadOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns(uploadResponse);
+
+        var items = new List<TestSensorData>
+        {
+            new() { Id = 100, SensorId = "S1", Value = 42.5, Timestamp = DateTime.UtcNow },
+            new() { Id = 101, SensorId = "S2", Value = 37.1, Timestamp = DateTime.UtcNow },
+            new() { Id = 110, SensorId = "S3", Value = 10.5, Timestamp = DateTime.UtcNow }
+        };
+
+        // Act
+        await _sut.WriteAsync("data/sensors.parquet", items);
+
+        // Assert
+        var encodings = await GetColumnEncodings(uploaded, "Id");
+        encodings.Should().NotContain(Encoding.DELTA_BINARY_PACKED);
+    }
+
+    [Fact]
+    public async Task WriteAsync_DeltaBinaryPackedEnabled_UsesDeltaBinaryPackedForIntColumns()
+    {
+        // Arrange
+        var uploaded = new MemoryStream();
+        var uploadResponse = CreateUploadResponse();
+        _mockFileClient.UploadAsync(
+                Arg.Do<Stream>(s =>
+                {
+                    uploaded.SetLength(0);
+                    s.Position = 0;
+                    s.CopyTo(uploaded);
+                    uploaded.Position = 0;
+                }),
+                Arg.Any<DataLakeFileUploadOptions>(),
+                Arg.Any<CancellationToken>())
+            .Returns(uploadResponse);
+
+        var items = new List<TestSensorData>
+        {
+            new() { Id = 1, SensorId = "S1", Value = 42.5, Timestamp = DateTime.UtcNow },
+            new() { Id = 2, SensorId = "S2", Value = 37.1, Timestamp = DateTime.UtcNow },
+            new() { Id = 3, SensorId = "S3", Value = 10.5, Timestamp = DateTime.UtcNow }
+        };
+
+        // Act
+        await _sut.WriteAsync("data/sensors.parquet", items,
+            new ParquetOptions { UseDeltaBinaryPackedEncoding = true });
+
+        // Assert
+        var encodings = await GetColumnEncodings(uploaded, "Id");
+        encodings.Should().Contain(Encoding.DELTA_BINARY_PACKED);
     }
 
     [Fact]
@@ -779,6 +847,21 @@ public class ParquetOperationsTests
             contentHash: null);
         var readResult = DataLakeModelFactory.DataLakeFileReadResult(content, details);
         return Azure.Response.FromValue(readResult, Substitute.For<Azure.Response>());
+    }
+
+    private static async Task<IReadOnlyCollection<Encoding>> GetColumnEncodings(Stream parquetStream, string columnName)
+    {
+        parquetStream.Position = 0;
+        using var reader = await ParquetReader.CreateAsync(parquetStream);
+        var metadata = reader.Metadata;
+        metadata.Should().NotBeNull("Parquet metadata should be available for encoding inspection.");
+
+        var target = metadata!.RowGroups
+            .SelectMany(rg => rg.Columns)
+            .FirstOrDefault(c => c.MetaData?.PathInSchema?.SequenceEqual(new[] { columnName }) == true);
+
+        target.Should().NotBeNull($"Column '{columnName}' should exist in parquet metadata.");
+        return target!.MetaData!.Encodings!;
     }
 
     /// <summary>

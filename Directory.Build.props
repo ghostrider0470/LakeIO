@@ -23,7 +23,7 @@
        ═══════════════════════════════════════════════════════════════ -->
   <PropertyGroup Condition="'$(_IsTestProject)' == 'false'">
     <!-- ── Version: bump here before merging to master ── -->
-    <Version>2.1.0</Version>
+    <Version>2.1.1</Version>
 
     <!-- ── Package metadata ── -->
     <Authors>Hamza Abdagic</Authors>
